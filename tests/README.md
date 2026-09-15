@@ -1,0 +1,42 @@
+# 测试说明
+
+## 单元测试（headless，CI 可跑）
+```
+cmake -S . -B build
+cmake --build build --config Release
+ctest --test-dir build -C Release
+```
+`domino_tests.exe` 覆盖：
+- `decode`：MediaStream 打开/逐帧解码/seek/资源释放幂等/close 复位
+- `encode`：encodeOffline 产物时长、remuxFaststart 进度与时长、断点续编+合并（含时间戳衔接）
+- `task`：任务持久化（meta）/重启扫描/断点恢复/删除；编码线程完成后 join（曾暴露析构 terminate bug）
+- `player`：vsync 对齐呈现截止时间（纯函数）+ 播放状态机冒烟（open/呈现/暂停/seek/EOF，注入哑音频 sink，不依赖 WASAPI）
+- `config`：默认配置与模型路径拼接
+- `beauty`：肤色判定/磨皮/美白/全部滤镜预设方向
+- `frame_output`：美颜快路径/双缓冲交换/滤镜缩略图生成
+- `sr`：NCNN 模型冒烟（无 GPU 时自动跳过）
+
+Flutter 测试（`cd flutter && flutter test`，纯 Dart，无需 DLL）：
+- `format_test`：时间格式化、任务状态名、滤镜列表（纯函数）
+- `widget_test`：任务中心新建/边播放、播放页控制条，用 `FakeEngine` 桩驱动（EngineApi 接口注入）
+
+测试数据用仓库内 `tests/assets/test_av.mp4`（2s）与 `test_long.mp4`（15s），
+目标宽取源宽（1280）以跳过超分、跑得快；临时数据写入 `%TEMP%/domino_tests`。
+
+## GUI 自动化（手动回归）
+`tests/gui/` 下 PowerShell 脚本，用于驱动真实 Win32 窗口做端到端回归（可用于 `domino_flutter.exe`）：
+- `killall.ps1`：强制清理所有 domino_flutter/domino_tests 进程（测试结束后务必执行）
+- `rclick.ps1 -Hwnd <句柄> -X <x> -Y <y>`：真实鼠标点击（先置前台再 SendInput；坐标为客户区）
+- `hover.ps1`：移动鼠标悬停
+- `rdrag.ps1`：按住拖动
+- `capture.ps1 -Hwnd <句柄> -OutPng <文件>`：截取窗口
+- `pix.ps1 -Hwnd <句柄> -X <x> -Y <y>`：采样单像素颜色（用于判断界面状态）
+
+典型回归流程：
+```
+# 启动 domino_flutter.exe → 点控制条「打开」选视频 → 校验播放/控制条/全屏等
+# 用 capture.ps1 + 逐像素比对判断画面是否在动（间隔两帧差异显著=在播）
+killall.ps1
+```
+注意：点击需目标窗口在前台（rclick 已处理）；Flutter 控件坐标随窗口尺寸/DPI 变化，
+先用 `capture.ps1` 截图 + 像素采样定位按钮，再 `rclick.ps1` 点击。

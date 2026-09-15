@@ -1,0 +1,22 @@
+#include "test_common.h"
+#include "config.h"
+
+// 配置：默认值应可用，模型路径拼接正确
+TEST(ConfigDefaultsUsable) {
+  Config c = Config::defaults();
+  EXPECT_TRUE(c.modelBase.size() > 4);          // 仓库内模型目录
+  EXPECT_TRUE(c.dataRoot.size() > 0);
+  EXPECT_TRUE(c.srParam().find("RealESRGAN_General_x4_v3.param") != std::string::npos);
+  EXPECT_TRUE(c.srBin().find("RealESRGAN_General_x4_v3.bin") != std::string::npos);
+}
+
+// 注入路径：srParam/srBin 基于 modelBase 拼接（末尾有无分隔符都应得到合法路径）
+TEST(ConfigPathInjection) {
+  Config c;
+  c.modelBase = "C:/models/";
+  EXPECT_STREQ(c.srParam().c_str(), "C:/models/RealESRGAN_General_x4_v3.param");
+  EXPECT_STREQ(c.srBin().c_str(), "C:/models/RealESRGAN_General_x4_v3.bin");
+
+  c.modelBase = "C:/models";
+  EXPECT_STREQ(c.srParam().c_str(), "C:/modelsRealESRGAN_General_x4_v3.param");  // 无分隔符由调用方负责
+}

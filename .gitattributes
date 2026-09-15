@@ -1,0 +1,22 @@
+# 默认按文本自动处理换行（仓库内统一 LF）
+* text=auto
+
+# Windows 脚本 / VS 工程用 CRLF
+*.ps1 text eol=crlf
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.sln text eol=crlf
+*.vcxproj text eol=crlf
+*.vcxproj.filters text eol=crlf
+
+# 二进制文件（不做换行转换、不参与 diff 文本化）
+*.bin binary
+*.task binary
+*.mp4 binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.ico binary
+*.dll binary
+*.lib binary
+*.exe binary

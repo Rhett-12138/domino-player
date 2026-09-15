@@ -1,0 +1,16 @@
+# 构建产物与运行时文件
+build/
+*.log
+
+# 预编译依赖（体积大，本地下载）
+libs/ffmpeg/
+libs/ncnn/
+libs/**/*.zip
+
+# 系统/编辑器
+.DS_Store
+Thumbs.db
+
+# 本地 agent 配置（仅本地保留，不随仓库发布）
+.opencode/
+opencode.json
