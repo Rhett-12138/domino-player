@@ -75,6 +75,7 @@ flutter run -d windows             # 开发运行（热重载）
 - Flutter 引擎头是**平铺**包含（`<flutter_export.h>`，非 `flutter/` 前缀）；导出需 `__declspec(dllexport)`（`DOMINO_EXPORT`）；runner 需 `/utf-8`。
 - `add_custom_command(TARGET ...)` 只能在同一目录；`$<CONFIG>` 在 VS 的 POST_BUILD 里不展开。
 - 播放冻结/无反应先查：`_pump` 是否抛异常（FFI 符号缺失）、DLL 是否最新、`_opening` 是否卡住。
+- **提交前扫敏感信息**：勿把个人绝对路径（`C:\Users\<你>\…`）、密钥/令牌/密码、个人文件路径写进源码或文档。提交前用 `git status` / `git diff` 自检，并扫描：`git grep -n -E "C:/Users|C:\\\\Users|C:/Repos|api[_-]?key|secret|token|password"`。**历史里的敏感信息删提交也删不掉**（需改写历史 + 强推，或删库重建），发布前务必确认。配置/密钥优先走环境变量（如 `DOMINO_MODEL_DIR`）或本地未跟踪文件（`.gitignore`）。
 
 ## 8. 协作模式（角色框架）
 
