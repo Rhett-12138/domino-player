@@ -89,13 +89,13 @@ BEGIN
     BEGIN
         BLOCK "040904e4"
         BEGIN
-            VALUE "CompanyName", "com.domino" "\0"
-            VALUE "FileDescription", "domino_flutter" "\0"
+            VALUE "CompanyName", "Domino" "\0"
+            VALUE "FileDescription", "Domino Player" "\0"
             VALUE "FileVersion", VERSION_AS_STRING "\0"
-            VALUE "InternalName", "domino_flutter" "\0"
-            VALUE "LegalCopyright", "Copyright (C) 2026 com.domino. All rights reserved." "\0"
+            VALUE "InternalName", "domino_player" "\0"
+            VALUE "LegalCopyright", "Copyright (C) 2026 Domino Player (MIT License)" "\0"
             VALUE "OriginalFilename", "domino_flutter.exe" "\0"
-            VALUE "ProductName", "domino_flutter" "\0"
+            VALUE "ProductName", "Domino Player" "\0"
             VALUE "ProductVersion", VERSION_AS_STRING "\0"
         END
     END

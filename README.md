@@ -10,6 +10,15 @@
 
 ![Domino Player 播放界面](docs/screenshots/main.png)
 
+## 下载（Windows 预编译包）
+
+无需自行编译：到 [**Releases**](https://github.com/Rhett-12138/domino-player/releases) 下载
+`domino-player-vX.Y.Z-win64.zip`，解压后双击 `domino_flutter.exe` 即可运行（详见包内 `运行说明.txt`）。
+
+- 需 64 位 Windows 10/11；超分需支持 Vulkan 的独立显卡。
+- 若提示缺少 `VCRUNTIME140/MSVCP140`，安装 [Microsoft Visual C++ 可再发行组件 (x64)](https://aka.ms/vs/17/release/vc_redist.x64.exe)。
+- 未签名 exe 首次运行可能触发 SmartScreen：点「更多信息 → 仍要运行」。
+
 ## 前置条件
 
 - **Visual Studio 2022**（MSVC，含「使用 C++ 的桌面开发」+ C++ CMake 工具）
