@@ -114,8 +114,12 @@ size_t WasapiAudioOut::bufferedFrames() {
 
 double WasapiAudioOut::clock() const {
   UINT64 gpos = 0, qpc = 0;
-  if (clockI_) clockI_->GetPosition(&gpos, &qpc);
-  if (gpos > 0) return (double)gpos / deviceRate;
+  if (clockI_ && SUCCEEDED(clockI_->GetPosition(&gpos, &qpc))) {
+    // IAudioClock 的 position 单位由 GetFrequency 定义，不能直接除以采样率
+    UINT64 freq = 0;
+    if (SUCCEEDED(clockI_->GetFrequency(&freq)) && freq > 0)
+      return (double)gpos / (double)freq;
+  }
   UINT32 pad = 0;
   if (client_) client_->GetCurrentPadding(&pad);
   uint64_t presented = writtenFrames_ > pad ? writtenFrames_ - pad : 0;

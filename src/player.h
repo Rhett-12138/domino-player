@@ -10,8 +10,9 @@
 #include <string>
 #include <memory>
 #include <chrono>
+#include <mutex>
 
-// 平滑呈现截止时间：把目标墙钟时刻对齐到整数个 vsync，避免 30fps/60Hz 量化抖动
+// 旧版 vsync 量化截止时间：当前播放按媒体 PTS/音频时钟呈现，保留给需要 vsync 量化的前端与纯函数测试
 inline double calcPresentDeadline(double baseWall, long long presentedFrames, double frameDur, double vsync) {
   double target = baseWall + (double)presentedFrames * frameDur;
   return ceil(target / vsync) * vsync;
@@ -107,6 +108,8 @@ private:
   void audioFeed();
   void seekInternal(double t);
   void ensureSR();
+  void resetClockAnchors();
+  double currentMediaClock();
   double nowWall() const { return std::chrono::duration<double>(std::chrono::steady_clock::now() - tStart_).count(); }
 
   IFrameOutput& out_;        // 视频输出（Flutter 像素纹理）
@@ -143,15 +146,22 @@ private:
   std::atomic<bool> resetAudio_{ false };
   std::atomic<bool> stopFeed_{ false };
   std::thread audioThread_;
+  std::mutex audMu_;   // 喂食线程解码与 UI seek 互斥
 
   // seek
   std::atomic<bool> seekPending_{ false };
   double seekTarget_ = 0;
   bool eofSeek_ = false;   // 该 seek 是 EOF 内部回卷，不重置 eof_
 
-  // 平滑呈现调度
+  // 呈现调度：媒体 PTS 为准，音频时钟优先，不可用时回退墙钟
   std::chrono::steady_clock::time_point tStart_;
-  double baseWall_ = 0;
+  double fallbackWallBase_ = 0;    // 0 = 尚未锚定
+  double fallbackMediaBase_ = 0;
+  double audioClockBase_ = 0;
+  double audioMediaBase_ = 0;
+  double lastAudioClock_ = 0;
+  double lastAudioClockWall_ = 0;
+  bool audioClockValid_ = false;
   long long presentedFrames_ = 0;
   bool havePending_ = false;
   bool pendingEOF_ = false;
@@ -159,7 +169,6 @@ private:
   double vsync_ = 1.0 / 60.0;
   double lastPresTime_ = 0;
   std::vector<double> presIntervals_;
-  double frameDur_ = 1.0 / 30.0;
 
   // 直播 / 当前打开路径
   std::string liveTaskId_;

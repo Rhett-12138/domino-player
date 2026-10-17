@@ -23,6 +23,35 @@ static std::string tempOut(const char* name) {
   return testcfg::dataDir() + "/" + name;
 }
 
+// 解码统计视频帧数（用于确认编码没有因 send EAGAIN 丢帧）
+static int countVideoFrames(const char* path) {
+  AVFormatContext* fmt = nullptr;
+  if (avformat_open_input(&fmt, path, nullptr, nullptr) < 0) return -1;
+  if (avformat_find_stream_info(fmt, nullptr) < 0) { avformat_close_input(&fmt); return -1; }
+  int vsi = av_find_best_stream(fmt, AVMEDIA_TYPE_VIDEO, -1, -1, nullptr, 0);
+  if (vsi < 0) { avformat_close_input(&fmt); return -1; }
+  const AVCodec* dec = avcodec_find_decoder(fmt->streams[vsi]->codecpar->codec_id);
+  AVCodecContext* ctx = avcodec_alloc_context3(dec);
+  avcodec_parameters_to_context(ctx, fmt->streams[vsi]->codecpar);
+  avcodec_open2(ctx, dec, nullptr);
+  AVPacket* pkt = av_packet_alloc();
+  AVFrame* fr = av_frame_alloc();
+  int n = 0;
+  while (av_read_frame(fmt, pkt) >= 0) {
+    if (pkt->stream_index == vsi && avcodec_send_packet(ctx, pkt) == 0) {
+      while (avcodec_receive_frame(ctx, fr) == 0) n++;
+    }
+    av_packet_unref(pkt);
+  }
+  avcodec_send_packet(ctx, nullptr);
+  while (avcodec_receive_frame(ctx, fr) == 0) n++;
+  av_packet_free(&pkt);
+  av_frame_free(&fr);
+  avcodec_free_context(&ctx);
+  avformat_close_input(&fmt);
+  return n;
+}
+
 // 全片编码（无超分：目标宽=源宽），校验产物可打开、时长正确
 TEST(EncodeFullNoSR) {
   std::string out = tempOut("encode_full.mp4");
@@ -34,6 +63,78 @@ TEST(EncodeFullNoSR) {
   EXPECT_TRUE(encodeOffline(assetPath("test_av.mp4").c_str(), out.c_str(), 1280, eo));
   EXPECT_NEAR(probeDuration(out.c_str()), 2.0, 0.3);
 }
+// 非整数帧率：29.97 源编码后仍应保持 30000/1001，不能被取整成 30fps
+TEST(EncodeNonIntegerFps) {
+  std::string src = assetPath("test_2997.mp4");
+  std::string out = tempOut("encode_2997.mp4");
+  std::error_code ec;
+  std::filesystem::remove(out, ec);
+  EncodeOptions eo;
+  eo.verbose = false;
+  eo.modelBase = Config::defaults().modelBase;
+  EXPECT_TRUE(encodeOffline(src.c_str(), out.c_str(), 320, eo));
+
+  double srcDur = probeDuration(src.c_str());
+  EXPECT_NEAR(probeDuration(out.c_str()), srcDur, 0.1);
+  EXPECT_EQ(countVideoFrames(out.c_str()), 59);   // 旧实现丢 2 帧（57）
+
+  AVFormatContext* fmt = nullptr;
+  EXPECT_TRUE(avformat_open_input(&fmt, out.c_str(), nullptr, nullptr) >= 0);
+  if (fmt) {
+    avformat_find_stream_info(fmt, nullptr);
+    int vsi = av_find_best_stream(fmt, AVMEDIA_TYPE_VIDEO, -1, -1, nullptr, 0);
+    EXPECT_TRUE(vsi >= 0);
+    if (vsi >= 0) {
+      // fMP4 的 avg_frame_rate 受时长估算影响，用 r_frame_rate 判断实际帧率
+      AVRational r = fmt->streams[vsi]->r_frame_rate;
+      double fps = av_q2d(r);
+      EXPECT_NEAR(fps, 30000.0 / 1001.0, 0.01);   // 旧实现为 30，会超出容差
+      // 视频与音频起点应对齐（关闭 B 帧后不应再有 ~66ms 偏移）
+      double vst = fmt->streams[vsi]->start_time != AV_NOPTS_VALUE
+        ? fmt->streams[vsi]->start_time * av_q2d(fmt->streams[vsi]->time_base) : 0;
+      int asi = av_find_best_stream(fmt, AVMEDIA_TYPE_AUDIO, -1, -1, nullptr, 0);
+      if (asi >= 0 && fmt->streams[asi]->start_time != AV_NOPTS_VALUE) {
+        double ast = fmt->streams[asi]->start_time * av_q2d(fmt->streams[asi]->time_base);
+        EXPECT_NEAR(vst, ast, 0.02);
+      }
+    }
+    avformat_close_input(&fmt);
+  }
+}
+
+// 源起点非 0（.ts 常见 start_time≈2.8s）：音视频都必须归一到 0，不能保留固定错位
+TEST(EncodeStartOffsetNormalized) {
+  std::string src = assetPath("test_offset.ts");
+  std::string out = tempOut("encode_offset.mp4");
+  std::error_code ec;
+  std::filesystem::remove(out, ec);
+  EncodeOptions eo;
+  eo.verbose = false;
+  eo.modelBase = Config::defaults().modelBase;
+  EXPECT_TRUE(encodeOffline(src.c_str(), out.c_str(), 1280, eo));
+  EXPECT_NEAR(probeDuration(out.c_str()), probeDuration(src.c_str()), 0.1);
+  EXPECT_EQ(countVideoFrames(out.c_str()), 60);
+
+  AVFormatContext* fmt = nullptr;
+  EXPECT_TRUE(avformat_open_input(&fmt, out.c_str(), nullptr, nullptr) >= 0);
+  if (fmt) {
+    avformat_find_stream_info(fmt, nullptr);
+    int vsi = av_find_best_stream(fmt, AVMEDIA_TYPE_VIDEO, -1, -1, nullptr, 0);
+    int asi = av_find_best_stream(fmt, AVMEDIA_TYPE_AUDIO, -1, -1, nullptr, 0);
+    EXPECT_TRUE(vsi >= 0 && asi >= 0);
+    if (vsi >= 0 && asi >= 0) {
+      double vst = fmt->streams[vsi]->start_time != AV_NOPTS_VALUE
+        ? fmt->streams[vsi]->start_time * av_q2d(fmt->streams[vsi]->time_base) : 0;
+      double ast = fmt->streams[asi]->start_time != AV_NOPTS_VALUE
+        ? fmt->streams[asi]->start_time * av_q2d(fmt->streams[asi]->time_base) : 0;
+      EXPECT_NEAR(vst, 0.0, 0.02);
+      EXPECT_NEAR(ast, 0.0, 0.02);
+      EXPECT_NEAR(vst, ast, 0.02);
+    }
+    avformat_close_input(&fmt);
+  }
+}
+
 TEST(RemuxFaststart) {
   std::string src = tempOut("encode_full.mp4");
   std::string out = tempOut("remux.mp4");

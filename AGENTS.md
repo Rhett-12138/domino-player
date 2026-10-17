@@ -78,8 +78,16 @@ flutter run -d windows             # 开发运行（热重载）
 - **提交前扫敏感信息**：勿把个人绝对路径（`C:\Users\<你>\…`）、密钥/令牌/密码、个人文件路径写进源码或文档。提交前用 `git status` / `git diff` 自检，并扫描：`git grep -n -E "C:/Users|C:\\\\Users|C:/Repos|api[_-]?key|secret|token|password"`。**历史里的敏感信息删提交也删不掉**（需改写历史 + 强推，或删库重建），发布前务必确认。配置/密钥优先走环境变量（如 `DOMINO_MODEL_DIR`）或本地未跟踪文件（`.gitignore`）。
 - **模型目录末尾分隔符**：前端注入的 `model_dir` 可能不带 `\`；一律用 `joinModelPath()`（`src/config.h`）拼接，禁止 `base + "文件名"`。
 - **`TaskCenter::start` 必须先 join 旧线程**：编码线程自然结束后仍 joinable，直接 `t->thread = std::thread(...)` 会 `std::terminate`。失败任务重试是真实触发路径。
-- **暂停恢复必须重置呈现基准**：`setPaused(false)` 要清 `baseWall_/presentedFrames_`，否则墙钟在暂停期间继续走，恢复后会按 pump 频率快进。
+- **暂停恢复必须重置呈现基准**：`setPaused(false)` 要 `resetClockAnchors()`，否则墙钟/音频时钟锚点在暂停期间失效，恢复后会跳变或快进。
 - **GPU 实例只由桥层销毁**：`Player`/`encodeOffline` 不得调用 `ncnn::destroy_gpu_instance()`；`domino_destroy` 先 `tasks->shutdown()`、再 `player->shutdown()`，最后统一销毁，避免与并行 SR 任务冲突。
+- **音频时钟单位**：`IAudioClock::GetPosition` 的单位由 `GetFrequency()` 定义，**不能直接除以采样率**；否则会出现视频 2x/0.5x 播放。
+- **播放呈现按 PTS**：`Player::readyToPresent` 用音频时钟（不可用时回退墙钟）对比 `pendingPts_`；暂停/seek/恢复必须 `resetClockAnchors()`，否则会跳变或快进。
+- **编码不要开 B 帧 / 关前瞻**：B 帧让首个 DTS 为负，fMP4 会把视频起点整体后移约 2 帧（约 66ms）；x264 前瞻会让视频包晚于音频输出，muxer 把视频整体后移。离线编码设 `max_b_frames=0` + `tune=zerolatency`。
+- **音频不能领先视频太多**：编码循环里音频包要进队列，最多领先视频 100ms 再写，否则 fMP4 交错会把后续视频 DTS 整体推后。
+- **muxer time_base 会变**：`avformat_write_header` 后音频 stream 可能从 1/90000 变为 1/44100；所有时间偏移（如源起点归一）必须在 header 之后按最终 time_base 计算。
+- **.ts 的 AAC 需要 `aac_adtstoasc`**：直接复制 ADTS 到 mp4 会 malformed；用 BSF，且 BSF 输出要按 `time_base_out` 再转回输出流时间基。
+- **非 0 起点归一**：视频 PTS 从 0 重建时，音频包也要减去同一 `videoStart`（并且丢掉落点在视频起点之前的音频），否则 .ts（start_time≈2.8s）会有固定唇音错位。
+- **解码 send EAGAIN 不能丢包**：`avcodec_send_packet/frame` 返回 EAGAIN 时必须先 receive 再重试，否则 29.97 等含重排的片源会少帧。
 - **续编分段不能乱删**：续编取消/失败时保留 `task.mp4.resume`，下次启动先合并再继续；替换主文件必须先备份、失败回滚，禁止静默忽略 `remove/rename` 错误。
   - `.resume.merging` = 合并中的续编段；`.resume.cont` = 续编段标记（主文件丢失时禁止当首段提升）；`.bak` = 主文件替换备份，启动时先恢复。
   - 合并幂等按“分段**末**帧是否已被主文件覆盖”判断；不要用首帧（检查点可能落后约 1s，首帧早于主文件末尾是合法重叠）。

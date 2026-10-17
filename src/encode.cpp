@@ -3,12 +3,15 @@
 #include "log.h"
 #include "ffmpeg_raii.h"
 #include <cstdio>
+#include <cmath>
 #include <vector>
+#include <deque>
 #include <chrono>
 #include <filesystem>
 
 extern "C" {
 #include <libavcodec/avcodec.h>
+#include <libavcodec/bsf.h>
 #include <libavformat/avformat.h>
 #include <libswscale/swscale.h>
 #include <libavutil/opt.h>
@@ -30,8 +33,18 @@ bool encodeOffline(const char* srcPath, const char* outPath, int targetW, const 
   AVStream* vs = sf.p->streams[vsi];
   int srcW = vs->codecpar->width;
   int srcH = vs->codecpar->height;
-  double srcFps = av_q2d(vs->avg_frame_rate);
-  if (srcFps <= 0 || srcFps > 240) srcFps = 30;
+  // 视频输出 PTS 从 0 重建；音频包也必须减掉同一媒体起点，避免 .ts 等
+  // start_time≈1.4s 的素材出现固定唇音不同步。
+  const double videoStartSec = vs->start_time != AV_NOPTS_VALUE
+    ? vs->start_time * av_q2d(vs->time_base) : 0.0;
+  AVRational srcRate = vs->avg_frame_rate;
+  double srcFps = av_q2d(srcRate);
+  if (srcRate.num <= 0 || srcRate.den <= 0 || srcFps <= 0 || srcFps > 240 ||
+      srcRate.den > 1001 || srcRate.num > 240 * 1001) {
+    // 异常/VFR 的 avg_frame_rate 会得到极端 time_base；按 CFR 30fps 回退
+    srcRate = AVRational{ 30, 1 };
+    srcFps = 30;
+  }
 
   // 断点续编：seek 到检查点（解码器在下方新开，无需 flush）
   if (startTime > 0) {
@@ -80,33 +93,73 @@ bool encodeOffline(const char* srcPath, const char* outPath, int targetW, const 
   if (!enc) { fprintf(stderr, "no h264 encoder\n"); return false; }
   CodecCtxGuard ectx;
   ectx.p = avcodec_alloc_context3(enc);
-  int fpsI = (int)lround(srcFps);
   ectx.p->width = outW;
   ectx.p->height = outH;
-  ectx.p->time_base = { 1, fpsI };
-  ectx.p->framerate = { fpsI, 1 };
+  // 保留精确有理帧率（如 30000/1001），避免 29.97/23.976 源被取整后 A/V 漂移
+  ectx.p->time_base = av_inv_q(srcRate);
+  ectx.p->framerate = srcRate;
   ectx.p->pix_fmt = AV_PIX_FMT_YUV420P;
   ectx.p->bit_rate = 10 * 1000 * 1000;
   ectx.p->gop_size = 60;
+  // 关闭 B 帧：B 帧会让首个 DTS 为负，fMP4 封装把时间轴整体后移约 2 帧，
+  // 而音频仍从 0 开始，形成固定唇音不同步。
+  ectx.p->max_b_frames = 0;
   ectx.p->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;  // SPS/PPS 放 extradata，fMP4 的 moov 在文件开头需要它
   av_opt_set(ectx.p->priv_data, "preset", "veryfast", 0);
+  // 关闭编码前瞻：否则视频包晚于音频数秒才输出，fMP4 交错时会把首个视频包
+  // 之后的帧整体后移，造成音画错位/首帧显示数秒。
+  av_opt_set(ectx.p->priv_data, "tune", "zerolatency", 0);
   if (avcodec_open2(ectx.p, enc, nullptr) < 0) { fprintf(stderr, "encoder open failed\n"); return false; }
 
   AVStream* ost = avformat_new_stream(ofmt.p, nullptr);
   ost->time_base = ectx.p->time_base;
   avcodec_parameters_from_context(ost->codecpar, ectx.p);
+  ost->codecpar->codec_tag = 0;   // 交给 mp4 muxer 选择 avc1/hvc1 等 tag
 
   AVStream* oas = nullptr;
   if (asi >= 0) {
     oas = avformat_new_stream(ofmt.p, nullptr);
     avcodec_parameters_copy(oas->codecpar, sf.p->streams[asi]->codecpar);
+    oas->codecpar->codec_tag = 0;   // .ts 的 tag（如 0x0f）不能直接用于 mp4
     oas->time_base = sf.p->streams[asi]->time_base;
+  }
+  int64_t audioOffset = 0;   // 在 write_header 之后按 muxer 最终 time_base 计算
+
+  // .ts 里的 AAC 是 ADTS，直接复制到 mp4 会报 malformed；需要 adtstoasc 裸流转换
+  AVBSFContext* absf = nullptr;
+  bool needAdts = false;
+  if (oas && oas->codecpar->codec_id == AV_CODEC_ID_AAC) {
+    needAdts = sf.p->streams[asi]->codecpar->codec_tag == 0x0f ||
+      (sf.p->iformat && sf.p->iformat->name &&
+       std::string(sf.p->iformat->name).find("mpegts") != std::string::npos);
+  }
+  if (needAdts) {
+    const AVBitStreamFilter* f = av_bsf_get_by_name("aac_adtstoasc");
+    if (!f || av_bsf_alloc(f, &absf) < 0) {
+      fprintf(stderr, "aac_adtstoasc init failed\n");
+      return false;
+    }
+    avcodec_parameters_copy(absf->par_in, sf.p->streams[asi]->codecpar);
+    absf->time_base_in = sf.p->streams[asi]->time_base;
+    if (av_bsf_init(absf) < 0) {
+      av_bsf_free(&absf);
+      fprintf(stderr, "aac_adtstoasc init failed\n");
+      return false;
+    }
   }
 
   if (!(ofmt.p->oformat->flags & AVFMT_NOFILE)) {
     if (avio_open(&ofmt.p->pb, outPath, AVIO_FLAG_WRITE) < 0) return false;
   }
-  avformat_write_header(ofmt.p, nullptr);
+  if (avformat_write_header(ofmt.p, nullptr) < 0) {
+    fprintf(stderr, "write header failed\n");
+    return false;
+  }
+  // muxer 可能在写 header 后调整 stream time_base（如音频改为 1/44100），必须重新计算
+  if (oas && videoStartSec > 0.0001) {
+    audioOffset = av_rescale_q((int64_t)llround(videoStartSec * AV_TIME_BASE),
+                               AV_TIME_BASE_Q, oas->time_base);
+  }
 
   // ---- 编码循环 ----
   SwsGuard swsOut;
@@ -128,97 +181,195 @@ bool encodeOffline(const char* srcPath, const char* outPath, int targetW, const 
   FrameGuard fr;
   fr.p = av_frame_alloc();
   bool cancelled = false;
-  while (av_read_frame(sf.p, ipkt.p) >= 0) {
-    if (prog && prog->cancel.load()) { cancelled = true; break; }
-    if (ipkt.p->stream_index == vsi) {
-      if (avcodec_send_packet(vctx.p, ipkt.p) == 0) {
-        while (avcodec_receive_frame(vctx.p, fr.p) == 0) {
-          // 断点续编：跳过检查点之前的帧（仅解码预热，不重编码）
-          if (startTime > 0) {
-            double ft = fr.p->best_effort_timestamp * av_q2d(vs->time_base);
-            if (ft < startTime) continue;
-          }
-          uint8_t* d0[1] = { rgb.data() };
-          int dl0[1] = { srcW * 3 };
-          sws_scale(swsIn.p, fr.p->data, fr.p->linesize, 0, srcH, d0, dl0);
+  bool writeError = false;
 
-          int sw = needSR ? sr.process(rgb.data(), srcW, srcH, inW, srgb) : srcW;
-          if (sw <= 0) continue;
-          uint8_t* sp = needSR ? srgb.data() : rgb.data();
-          if (opts.preview) opts.preview(sp, outW, outH, opts.previewUserdata);
-          int sl[1] = { sw * 3 };
-          size_t ysize = (size_t)outW * outH;
-          uint8_t* d[3] = { yuv.data(), yuv.data() + ysize, yuv.data() + ysize + ysize / 4 };
-          int ds[3] = { outW, outW / 2, outW / 2 };
-          sws_scale(swsOut.p, &sp, sl, 0, outH, d, ds);
+  auto writeAudioPacket = [&](AVPacket* p) {
+    p->stream_index = oas->index;
+    if (av_interleaved_write_frame(ofmt.p, p) < 0) writeError = true;
+  };
 
-          FrameGuard f;
-          f.p = av_frame_alloc();
-          f.p->format = ectx.p->pix_fmt;
-          f.p->width = outW;
-          f.p->height = outH;
-          f.p->pts = startFrame + count;  // 续编时帧号延续
-          av_image_fill_arrays(f.p->data, f.p->linesize, yuv.data(), AV_PIX_FMT_YUV420P, outW, outH, 1);
-          if (avcodec_send_frame(ectx.p, f.p) == 0) {
-            PktGuard op;
-            op.p = av_packet_alloc();
-            while (avcodec_receive_packet(ectx.p, op.p) == 0) {
-              av_packet_rescale_ts(op.p, ectx.p->time_base, ost->time_base);
-              av_interleaved_write_frame(ofmt.p, op.p);
-              av_packet_unref(op.p);
-            }
-          }
-          count++;
-          if (prog) {
-            prog->frame.store(count + startFrame);
-            double ft = fr.p->best_effort_timestamp * av_q2d(vs->time_base);
-            if (ft > 0) prog->curTime.store(ft);  // 检查点：最近帧的源时间
-            double el = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
-            if (el > 0.5) prog->fps.store(count / el);
-            // 周期持久化断点（约每 1s），应用被杀后仍可续编
-            auto now = std::chrono::steady_clock::now();
-            if (prog->checkpointCb && std::chrono::duration<double>(now - lastCheck).count() >= 1.0) {
-              lastCheck = now;
-              prog->checkpointCb();
-            }
-          }
-          if (verbose && count % 30 == 0) {
-            double el = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
-            printf("encoded %lld frames (%.1f fps)\n", count, count / el);
-          }
-        }
-      }
-    } else if (oas && ipkt.p->stream_index == asi) {
-      // 断点续编：跳过检查点之前的音频包
-      if (startTime > 0) {
-        double at = ipkt.p->pts != AV_NOPTS_VALUE ? ipkt.p->pts * av_q2d(sf.p->streams[asi]->time_base) : 0;
-        if (at < startTime) { av_packet_unref(ipkt.p); continue; }
-      }
-      av_packet_rescale_ts(ipkt.p, sf.p->streams[asi]->time_base, oas->time_base);
-      ipkt.p->stream_index = oas->index;
-      av_interleaved_write_frame(ofmt.p, ipkt.p);
+  // 音频最多领先视频 100ms 写出；否则 muxer 会把晚到的视频包整体后移
+  std::deque<AVPacket*> audioQ;
+  auto queueAudio = [&](AVPacket* p) {
+    AVPacket* q = av_packet_alloc();
+    if (!q) { writeError = true; return; }
+    av_packet_move_ref(q, p);
+    audioQ.push_back(q);
+  };
+  auto flushAudio = [&](int64_t limitOas) {
+    while (!audioQ.empty()) {
+      AVPacket* p = audioQ.front();
+      int64_t pts = p->pts != AV_NOPTS_VALUE ? p->pts : p->dts;
+      if (limitOas != AV_NOPTS_VALUE && pts != AV_NOPTS_VALUE && pts > limitOas) break;
+      writeAudioPacket(p);
+      av_packet_free(&p);
+      audioQ.pop_front();
     }
-    av_packet_unref(ipkt.p);
-  }
+  };
+  auto queueAudioFromBsf = [&](AVPacket* p) {
+    av_packet_rescale_ts(p, absf->time_base_out, oas->time_base);
+    if (audioOffset != 0) {
+      if (p->pts != AV_NOPTS_VALUE) p->pts -= audioOffset;
+      if (p->dts != AV_NOPTS_VALUE) p->dts -= audioOffset;
+    }
+    queueAudio(p);
+  };
 
-  // flush 视频编码器
-  if (avcodec_send_frame(ectx.p, nullptr) == 0) {
+  auto drainEncoder = [&] {
     PktGuard op;
     op.p = av_packet_alloc();
     while (avcodec_receive_packet(ectx.p, op.p) == 0) {
       av_packet_rescale_ts(op.p, ectx.p->time_base, ost->time_base);
-      av_interleaved_write_frame(ofmt.p, op.p);
+      op.p->stream_index = ost->index;
+      if (oas && op.p->pts != AV_NOPTS_VALUE) {
+        const int64_t lead = av_rescale_q(1, AVRational{ 1, 10 }, ost->time_base);
+        flushAudio(av_rescale_q(op.p->pts + lead, ost->time_base, oas->time_base));
+      }
+      if (av_interleaved_write_frame(ofmt.p, op.p) < 0) writeError = true;
       av_packet_unref(op.p);
     }
+  };
+
+  auto encodeDecodedFrame = [&](AVFrame* frame) {
+    // 断点续编：跳过检查点之前的帧（仅解码预热，不重编码）
+    if (startTime > 0) {
+      double ft = frame->best_effort_timestamp * av_q2d(vs->time_base);
+      if (ft < startTime) return;
+    }
+    uint8_t* d0[1] = { rgb.data() };
+    int dl0[1] = { srcW * 3 };
+    sws_scale(swsIn.p, frame->data, frame->linesize, 0, srcH, d0, dl0);
+
+    int sw = needSR ? sr.process(rgb.data(), srcW, srcH, inW, srgb) : srcW;
+    if (sw <= 0) return;
+    uint8_t* sp = needSR ? srgb.data() : rgb.data();
+    if (opts.preview) opts.preview(sp, outW, outH, opts.previewUserdata);
+    int sl[1] = { sw * 3 };
+    size_t ysize = (size_t)outW * outH;
+    uint8_t* d[3] = { yuv.data(), yuv.data() + ysize, yuv.data() + ysize + ysize / 4 };
+    int ds[3] = { outW, outW / 2, outW / 2 };
+    sws_scale(swsOut.p, &sp, sl, 0, outH, d, ds);
+
+    FrameGuard f;
+    f.p = av_frame_alloc();
+    f.p->format = ectx.p->pix_fmt;
+    f.p->width = outW;
+    f.p->height = outH;
+    f.p->pts = startFrame + count;  // 续编时帧号延续
+    av_image_fill_arrays(f.p->data, f.p->linesize, yuv.data(), AV_PIX_FMT_YUV420P, outW, outH, 1);
+    int sret = avcodec_send_frame(ectx.p, f.p);
+    while (sret == AVERROR(EAGAIN)) {
+      drainEncoder();
+      sret = avcodec_send_frame(ectx.p, f.p);
+    }
+    if (sret == 0) drainEncoder();
+    count++;
+    if (prog) {
+      prog->frame.store(count + startFrame);
+      double ft = frame->best_effort_timestamp * av_q2d(vs->time_base);
+      if (ft > 0) prog->curTime.store(ft);  // 检查点：最近帧的源时间
+      double el = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+      if (el > 0.5) prog->fps.store(count / el);
+      // 周期持久化断点（约每 1s），应用被杀后仍可续编
+      auto now = std::chrono::steady_clock::now();
+      if (prog->checkpointCb && std::chrono::duration<double>(now - lastCheck).count() >= 1.0) {
+        lastCheck = now;
+        prog->checkpointCb();
+      }
+    }
+    if (verbose && count % 30 == 0) {
+      double el = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+      printf("encoded %lld frames (%.1f fps)\n", count, count / el);
+    }
+  };
+
+  auto drainDecoder = [&] {
+    while (avcodec_receive_frame(vctx.p, fr.p) == 0) encodeDecodedFrame(fr.p);
+  };
+
+  while (av_read_frame(sf.p, ipkt.p) >= 0) {
+    if (prog && prog->cancel.load()) { cancelled = true; break; }
+    if (ipkt.p->stream_index == vsi) {
+      int sret = avcodec_send_packet(vctx.p, ipkt.p);
+      while (sret == AVERROR(EAGAIN)) {
+        // 解码器缓冲满：先取帧，再重试未消费的包，不能丢弃
+        int r = avcodec_receive_frame(vctx.p, fr.p);
+        if (r == AVERROR(EAGAIN)) {
+          // 理论上 send EAGAIN 时 receive 应可出帧；避免死循环
+          logx::warn("decoder receive EAGAIN while draining");
+          break;
+        }
+        if (r < 0) {
+          logx::error("decoder receive failed: %d", r);
+          break;
+        }
+        encodeDecodedFrame(fr.p);
+        sret = avcodec_send_packet(vctx.p, ipkt.p);
+      }
+      if (sret == 0) drainDecoder();
+    } else if (oas && ipkt.p->stream_index == asi) {
+      double at = ipkt.p->pts != AV_NOPTS_VALUE ? ipkt.p->pts * av_q2d(sf.p->streams[asi]->time_base) : 0;
+      // 视频起点之前的音频不写入，避免输出负时间戳
+      if (videoStartSec > 0.0001 && at + 1e-6 < videoStartSec) { av_packet_unref(ipkt.p); continue; }
+      // 断点续编：跳过检查点之前的音频包
+      if (startTime > 0 && at < startTime) { av_packet_unref(ipkt.p); continue; }
+      if (absf) {
+        // BSF 输入保持源时间基（time_base_in），输出再转到 oas 时间基
+        if (av_bsf_send_packet(absf, ipkt.p) < 0) {
+          writeError = true;
+        } else {
+          while (av_bsf_receive_packet(absf, ipkt.p) == 0) {
+            queueAudioFromBsf(ipkt.p);
+            av_packet_unref(ipkt.p);
+          }
+        }
+      } else {
+        av_packet_rescale_ts(ipkt.p, sf.p->streams[asi]->time_base, oas->time_base);
+        if (audioOffset != 0) {
+          if (ipkt.p->pts != AV_NOPTS_VALUE) ipkt.p->pts -= audioOffset;
+          if (ipkt.p->dts != AV_NOPTS_VALUE) ipkt.p->dts -= audioOffset;
+        }
+        queueAudio(ipkt.p);
+      }
+    }
+    av_packet_unref(ipkt.p);
   }
-  av_write_trailer(ofmt.p);
+
+  // flush 音频 BSF（ADTS → ASC 可能缓存尾部）
+  if (absf) {
+    if (av_bsf_send_packet(absf, nullptr) >= 0) {
+      while (av_bsf_receive_packet(absf, ipkt.p) == 0) {
+        queueAudioFromBsf(ipkt.p);
+        av_packet_unref(ipkt.p);
+      }
+    }
+    av_bsf_free(&absf);
+  }
+
+  // flush 解码器 + 编码器
+  int dret = avcodec_send_packet(vctx.p, nullptr);
+  while (dret == AVERROR(EAGAIN)) {
+    drainDecoder();
+    dret = avcodec_send_packet(vctx.p, nullptr);
+  }
+  if (dret == 0) drainDecoder();
+  int eret = avcodec_send_frame(ectx.p, nullptr);
+  while (eret == AVERROR(EAGAIN)) {
+    drainEncoder();
+    eret = avcodec_send_frame(ectx.p, nullptr);
+  }
+  if (eret == 0) drainEncoder();
+  flushAudio(AV_NOPTS_VALUE);   // 写出剩余音频
+  if (av_write_trailer(ofmt.p) < 0) writeError = true;
   double el = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+  const bool ok = !cancelled && !writeError;
   printf("ENCODE %s frames=%lld fps=%.1f out=%dx%d audio=%d -> %s\n",
-    cancelled ? "CANCELLED" : "DONE", count, count / el, outW, outH, oas ? 1 : 0, outPath);
-  if (prog) { prog->fps.store(count / el); prog->done.store(true); prog->success.store(!cancelled); }
+    cancelled ? "CANCELLED" : (writeError ? "ERROR" : "DONE"),
+    count, count / el, outW, outH, oas ? 1 : 0, outPath);
+  if (prog) { prog->fps.store(count / el); prog->done.store(true); prog->success.store(ok); }
 
   if (needSR) sr.clear();   // 全局 GPU 实例由前端统一管理
-  return !cancelled;
+  return ok;
 }
 
 bool remuxFaststart(const char* inPath, const char* outPath, RemuxProgressFn prog, void* ud) {

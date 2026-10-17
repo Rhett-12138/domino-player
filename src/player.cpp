@@ -19,6 +19,7 @@ void Player::shutdown() {
   vid_.close();
   aud_.close();
   currentPath_.clear();
+  resetClockAnchors();
   sr_.clear();   // 全局 GPU 实例由前端在停止所有任务后统一销毁
 }
 
@@ -44,7 +45,11 @@ void Player::audioFeed() {
       continue;
     }
 
-    int n = aud_.nextAudioFrame(srcBuf.data(), 8192, &pts);
+    int n = 0;
+    {
+      std::lock_guard<std::mutex> lk(audMu_);
+      n = aud_.nextAudioFrame(srcBuf.data(), 8192, &pts);
+    }
     if (n <= 0) { std::this_thread::sleep_for(std::chrono::milliseconds(5)); continue; }
 
     if (!resampler) {
@@ -90,6 +95,7 @@ bool Player::open(const std::string& path) {
   vid_.close();
   aud_.close();
   currentPath_.clear();
+  resetClockAnchors();
   if (!vid_.open(path.c_str())) return false;
   currentPath_ = path;
   ensureSR();
@@ -105,11 +111,10 @@ bool Player::open(const std::string& path) {
   seekPending_.store(false);
   eofSeek_ = false;
   seekTarget_ = 0;
-  frameDur_ = fps_ > 0 ? 1.0 / fps_ : 1.0 / 30.0;
   havePending_ = false;
   pendingEOF_ = false;
   presentedFrames_ = 0;
-  baseWall_ = 0;
+  resetClockAnchors();
   frameCount_ = 0;
   lastFps_ = 0;
   fpsT0_ = std::chrono::steady_clock::now();
@@ -123,6 +128,7 @@ void Player::close() {
   vid_.close();
   aud_.close();
   currentPath_.clear();
+  resetClockAnchors();
   playhead_ = 0;
   duration_ = 0;
   fps_ = 30;
@@ -140,9 +146,13 @@ void Player::requestSeek(double t) {
 
 void Player::seekInternal(double t) {
   vid_.seek(t);
-  aud_.seek(t);
+  {
+    std::lock_guard<std::mutex> lk(audMu_);
+    aud_.seek(t);
+  }
   resetAudio_.store(true);
   playhead_ = t;
+  resetClockAnchors();
 }
 
 bool Player::processSeek() {
@@ -151,7 +161,7 @@ bool Player::processSeek() {
   pendingEOF_ = false;
   seekInternal(seekTarget_);
   presentedFrames_ = 0;
-  baseWall_ = 0;
+  resetClockAnchors();
   if (eofSeek_)
     eofSeek_ = false;   // EOF 内部回卷：保留 eof_ 供前端判断
   else
@@ -166,17 +176,23 @@ void Player::setPaused(bool p) {
     eof_ = false;   // 重新播放即脱离 EOF 态
     // 暂停期间墙钟仍在走，恢复时必须重置呈现基准，否则会按 pump 频率快进追帧
     presentedFrames_ = 0;
-    baseWall_ = 0;
+    resetClockAnchors();
   }
   if (hasAudio_) {
     if (p) {
       audio_->pause();
       audio_->flush();
+      audioClockValid_ = false;
     } else {
-      if (!audioStarted_.load()) startAudio();
-      aud_.seek(playhead_);
-      audio_->flush();
-      resetAudio_.store(true);
+      if (!audioStarted_.load()) {
+        startAudio();   // 内部已 seek + 置 resetAudio_
+      } else {
+        std::lock_guard<std::mutex> lk(audMu_);
+        aud_.seek(playhead_);
+        resetAudio_.store(true);
+      }
+      audioClockValid_ = false;
+      lastAudioClock_ = 0;
       audio_->resume();
     }
   }
@@ -184,6 +200,14 @@ void Player::setPaused(bool p) {
 
 void Player::startAudio() {
   if (audioStarted_.exchange(true)) return;
+  // 视频首个 PTS 可能不是 0；把音频也 seek 到同一媒体时间，避免非零起点错位
+  if (playhead_ > 0.01) {
+    std::lock_guard<std::mutex> lk(audMu_);
+    aud_.seek(playhead_);
+  }
+  resetAudio_.store(true);
+  audioClockValid_ = false;
+  lastAudioClock_ = 0;
   audio_->start();
   stopFeed_.store(false);
   audioThread_ = std::thread(audioFeedStatic, this);
@@ -227,12 +251,56 @@ void Player::prefetch() {
   if (ready) havePending_ = true;
 }
 
+void Player::resetClockAnchors() {
+  fallbackWallBase_ = 0;
+  fallbackMediaBase_ = 0;
+  audioClockBase_ = 0;
+  audioMediaBase_ = 0;
+  lastAudioClock_ = 0;
+  lastAudioClockWall_ = 0;
+  audioClockValid_ = false;
+}
+
+// 当前媒体时钟：优先音频设备已播放位置；不可用时用墙钟从首帧 PTS 起算。
+// 音频时钟刚可用/回退/跳变时，以当前回退时钟为锚，保证切换不跳变。
+double Player::currentMediaClock() {
+  const double now = nowWall();
+  if (hasAudio_ && audioStarted_.load()) {
+    const double ac = audio_->clock();
+    // 设备时钟停走（切设备/驱动异常）时不能永久冻结画面：0.5s 未推进则回退墙钟
+    if (audioClockValid_ && now - lastAudioClockWall_ > 0.5) {
+      const double lastMedia = audioMediaBase_ + (lastAudioClock_ - audioClockBase_);
+      audioClockValid_ = false;
+      fallbackWallBase_ = now;
+      fallbackMediaBase_ = lastMedia;
+    }
+    if (ac > 0.0005) {
+      const bool reanchor = !audioClockValid_ || ac + 0.05 < lastAudioClock_ ||
+                            ac > lastAudioClock_ + 0.5;
+      if (reanchor) {
+        if (fallbackWallBase_ <= 0) {
+          fallbackWallBase_ = now;
+          fallbackMediaBase_ = pendingPts_;
+        }
+        audioMediaBase_ = fallbackMediaBase_ + (now - fallbackWallBase_);
+        audioClockBase_ = ac;
+        audioClockValid_ = true;
+      }
+      if (ac > lastAudioClock_ + 0.0005 || reanchor) lastAudioClockWall_ = now;
+      lastAudioClock_ = ac;
+      return audioMediaBase_ + (ac - audioClockBase_);
+    }
+  }
+  if (fallbackWallBase_ <= 0) {
+    fallbackWallBase_ = now;
+    fallbackMediaBase_ = pendingPts_;
+  }
+  return fallbackMediaBase_ + (now - fallbackWallBase_);
+}
+
 bool Player::readyToPresent() {
   if (!havePending_) return false;
-  double now = nowWall();
-  if (baseWall_ == 0) baseWall_ = now;
-  double deadline = calcPresentDeadline(baseWall_, presentedFrames_, frameDur_, vsync_);
-  return now >= deadline;
+  return currentMediaClock() + 0.0005 >= pendingPts_;
 }
 
 bool Player::presentFrame() {
@@ -256,6 +324,12 @@ void Player::pump() {
   processSeek();
   if (paused_.load()) return;
   prefetch();
+  // UI/Ticker 停摆后媒体时钟可能已远超前；丢弃积压帧，只呈现最新帧，避免按 tick 频率快进
+  for (int drops = 0; havePending_ && drops < 300; drops++) {
+    if (currentMediaClock() - pendingPts_ <= 0.10) break;
+    havePending_ = false;
+    prefetch();
+  }
   if (readyToPresent()) {
     if (presentFrame()) startAudio();   // 第一帧呈现时启动音频
   }

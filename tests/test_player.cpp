@@ -22,6 +22,36 @@ public:
   double clock() const override { return 0; }
 };
 
+// 会推进的假音频时钟：clock() 以 2x 墙钟速度前进，用来验证视频由音频时钟驱动
+class ClockAudioSink : public AudioSink {
+public:
+  bool init() override { return true; }
+  bool start() override { t0_ = std::chrono::steady_clock::now(); base_ = 0; running_ = true; return true; }
+  void stop() override { pause(); }
+  void pause() override {
+    if (!running_) return;
+    base_ += std::chrono::duration<double>(std::chrono::steady_clock::now() - t0_).count();
+    running_ = false;
+  }
+  void resume() override {
+    if (running_) return;
+    t0_ = std::chrono::steady_clock::now();
+    running_ = true;
+  }
+  void push(const float*, int) override {}
+  void flush() override {}
+  size_t bufferedFrames() override { return (size_t)deviceRate * 60; }
+  double clock() const override {
+    double e = base_;
+    if (running_) e += std::chrono::duration<double>(std::chrono::steady_clock::now() - t0_).count();
+    return e * 2.0;   // 故意快于墙钟
+  }
+private:
+  std::chrono::steady_clock::time_point t0_{};
+  double base_ = 0;
+  bool running_ = false;
+};
+
 static void sleepMs(int ms) { std::this_thread::sleep_for(std::chrono::milliseconds(ms)); }
 
 // vsync 对齐的呈现截止时间：30fps/60Hz 下目标时刻应被对齐到 1/60 整数倍
@@ -111,6 +141,46 @@ TEST(PlayerPauseResumeClock) {
   double delta = p.position() - before;
   EXPECT_TRUE(delta > 0.5);   // 恢复后确实在播放
   EXPECT_TRUE(delta < 1.2);   // 不应把暂停的 1.2s 也快进掉（旧实现约 2.0+）
+  p.close();
+}
+
+// 有音频时钟时应由它驱动视频：假时钟 2x 墙钟，0.6s 墙钟应推进约 1.2s 内容
+TEST(PlayerAudioClockDrivesVideo) {
+  EngineFrameOutput out;
+  Player p(out);
+  p.setAudioSink(std::make_unique<ClockAudioSink>());
+  p.setNoSR(true);
+  p.setConfig(Config::defaults());
+  EXPECT_TRUE(p.open(assetPath("test_long.mp4").c_str()));
+
+  auto t0 = std::chrono::steady_clock::now();
+  while (std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count() < 0.6) {
+    p.pump();
+    sleepMs(5);
+  }
+  double pos = p.position();
+  EXPECT_TRUE(pos > 0.85);   // 若回退墙钟则约 0.6（fail）
+  EXPECT_TRUE(pos < 1.7);
+  p.close();
+}
+
+// Ticker 停摆后恢复：应丢弃积压帧直接追到当前媒体时间，而不是按 tick 频率快进
+TEST(PlayerDropsLateFramesAfterStall) {
+  EngineFrameOutput out;
+  Player p(out);
+  p.setAudioSink(std::make_unique<DummyAudioSink>());
+  p.setNoSR(true);
+  p.setConfig(Config::defaults());
+  EXPECT_TRUE(p.open(assetPath("test_long.mp4").c_str()));
+
+  for (int i = 0; i < 30; i++) { p.pump(); sleepMs(10); }   // ~0.3s
+  double before = p.position();
+  long long framesBefore = p.frameIdx();
+  sleepMs(1000);                                            // UI 停摆 1s，不 pump
+  for (int i = 0; i < 3; i++) { p.pump(); sleepMs(5); }      // 恢复
+  double delta = p.position() - before;
+  EXPECT_TRUE(delta > 0.8);                                 // 追到当前时钟附近
+  EXPECT_TRUE(p.frameIdx() - framesBefore <= 5);            // 只呈现少量最新帧
   p.close();
 }
 
