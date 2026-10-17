@@ -266,16 +266,18 @@ class _TaskCenterScreenState extends State<TaskCenterScreen> {
             Text(
               status == 3
                   ? '完成 · ${frames} 帧'
-                  : status == 2 && resume > 0.01
-                      ? '已编码 ${frames} 帧 · 断点 ${resume.toStringAsFixed(1)}s'
-                      : '进度 ${frames} / ${total} 帧',
+                  : status == 4
+                      ? '失败 · 已编码 ${frames} 帧'
+                      : status == 2 && resume > 0.01
+                          ? '已编码 ${frames} 帧 · 断点 ${resume.toStringAsFixed(1)}s'
+                          : '进度 ${frames} / ${total} 帧',
               style: const TextStyle(fontSize: 13, color: Colors.white70),
             ),
             const SizedBox(height: 8),
             Row(
               children: [
-                if (status == 0 || status == 2)
-                  _action('开始', () => e.taskStart(i))
+                if (status == 0 || status == 2 || status == 4)
+                  _action(status == 4 ? '重试' : '开始', () => e.taskStart(i))
                 else if (status == 1)
                   _action('停止', () => e.taskStop(i)),
                 const SizedBox(width: 8),

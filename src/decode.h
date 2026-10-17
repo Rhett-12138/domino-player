@@ -1,5 +1,6 @@
 #pragma once
 #include <string>
+#include <vector>
 
 extern "C" {
 #include <libavformat/avformat.h>
@@ -24,6 +25,11 @@ struct MediaStream {
   bool hasAudio = false;
   int sampleRate = 0;
   int channels = 0;
+
+  // 每个 MediaStream 独立持有，避免多个实例（多播放器/测试）并发解码时互相踩
+  AVPacket* pkt = nullptr;
+  AVFrame* fr = nullptr;
+  std::vector<uint8_t> convBuf;   // 音频 swr 输出复用缓冲
 
   bool open(const char* path);
   // 视频帧 → RGB24；返回 0 成功、-1 结束

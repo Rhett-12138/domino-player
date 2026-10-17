@@ -46,6 +46,40 @@ TEST(RemuxFaststart) {
   EXPECT_TRUE(prog > 0.0f && prog <= 1.0f);  // 进度回调被调用
 }
 
+// 检查点滞后：分段起点比主文件末尾早约 0.5s 时，仍必须追加（不能把整段当“已合并”丢掉）
+TEST(MergeCheckpointLagKeepsTail) {
+  std::string main = tempOut("lag_main.mp4");
+  std::string part = tempOut("lag_part.mp4");
+  std::string merged = tempOut("lag_merged.mp4");
+  std::error_code ec;
+  for (auto& f : { main, part, merged }) std::filesystem::remove(f, ec);
+
+  EncodeProgress prog;
+  EncodeOptions eo;
+  eo.verbose = false;
+  eo.prog = &prog;
+  eo.modelBase = Config::defaults().modelBase;
+  std::thread t([&] { encodeOffline(assetPath("test_long.mp4").c_str(), main.c_str(), 1280, eo); });
+  std::this_thread::sleep_for(std::chrono::milliseconds(300));
+  prog.cancel.store(true);
+  t.join();
+
+  double mainDur = probeDuration(main.c_str());
+  EXPECT_TRUE(mainDur > 0.05 && mainDur < 14.0);
+
+  EncodeOptions eo2;
+  eo2.verbose = false;
+  eo2.modelBase = Config::defaults().modelBase;
+  eo2.startTime = mainDur > 0.5 ? mainDur - 0.5 : 0.0;   // 模拟检查点滞后
+  eo2.startFrame = 0;
+  EXPECT_TRUE(encodeOffline(assetPath("test_long.mp4").c_str(), part.c_str(), 1280, eo2));
+
+  EXPECT_TRUE(mergeToMp4(main.c_str(), part.c_str(), merged.c_str()));
+  double d = probeDuration(merged.c_str());
+  EXPECT_TRUE(d > mainDur + 1.0);              // 尾巴没有被整段丢弃
+  EXPECT_TRUE(d < 17.0);                       // 也不应重复成 30s
+}
+
 // 断点续编 + 合并：先编码 ~0.6s 后取消（部分产物），再续编剩余，合并后应为完整时长
 TEST(ResumeAndMerge) {
   std::string main = tempOut("resume_main.mp4");

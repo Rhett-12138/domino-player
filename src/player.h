@@ -40,8 +40,8 @@ public:
   double position() const { return playhead_; }
   double duration() const { return duration_; }
   double fps() const { return fps_; }
-  bool paused() const { return paused_; }
-  double volume() const { return volume_; }
+  bool paused() const { return paused_.load(); }
+  double volume() const { return volume_.load(); }
   bool hasAudio() const { return hasAudio_; }
   int srcW() const { return vid_.vw; }
   int srcH() const { return vid_.vh; }
@@ -57,7 +57,7 @@ public:
   // ---- 控制 ----
   void setPaused(bool p);
   void requestSeek(double t);
-  void setVolume(double v) { volume_ = v; }
+  void setVolume(double v) { volume_.store(v); }
 
   // ---- 美颜/滤镜（引擎状态，帧输出在上屏前应用） ----
   void setBeauty(float smooth, float white) { bp_.smooth = smooth; bp_.white = white; }
@@ -80,8 +80,6 @@ public:
   EofAction handleEof();
   // 直播：更新 seek 时长/进度（跟随任务编码）
   void updateLiveProgress(double frames, double fps);
-  // 直播：编码完成时释放 task.mp4 句柄（合并前）
-  void releaseForMerge(std::atomic<bool>* fileFree);
 
   // ---- 呈现（经 IFrameOutput 输出），中间可插入 UI ----
   void beginRender();       // 绑定后缓冲并绘制视频四边形
@@ -102,6 +100,7 @@ public:
 
   std::string titleText() const;
   int vsyncPeriod() const;   // 供 UI 展示/调试
+  const std::string& currentPath() const { return currentPath_; }
 
 private:
   static void audioFeedStatic(Player* self);
@@ -116,8 +115,8 @@ private:
   SR sr_;
   std::unique_ptr<AudioSink> audio_;   // 音频输出（默认 WASAPI；可注入）
 
-  bool paused_ = false;
-  double volume_ = 1.0;
+  std::atomic<bool> paused_{ false };
+  std::atomic<double> volume_{ 1.0 };
   double playhead_ = 0;
   double duration_ = 0;
   double fps_ = 30;
@@ -148,6 +147,7 @@ private:
   // seek
   std::atomic<bool> seekPending_{ false };
   double seekTarget_ = 0;
+  bool eofSeek_ = false;   // 该 seek 是 EOF 内部回卷，不重置 eof_
 
   // 平滑呈现调度
   std::chrono::steady_clock::time_point tStart_;
@@ -161,9 +161,10 @@ private:
   std::vector<double> presIntervals_;
   double frameDur_ = 1.0 / 30.0;
 
-  // 直播
+  // 直播 / 当前打开路径
   std::string liveTaskId_;
   std::string livePlayPath_;
+  std::string currentPath_;
 
   // 美颜/滤镜
   EngineBeautyParams bp_;

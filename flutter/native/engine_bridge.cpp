@@ -6,6 +6,7 @@
 
 #include <windows.h>
 #include <shobjidl.h>
+#include <ncnn/gpu.h>
 #include <mutex>
 #include <vector>
 #include <memory>
@@ -46,6 +47,13 @@ static uint8_t g_black_px[4] = { 0, 0, 0, 255 };
 // 只在 out 锁内做 RGBA 转换（memcpy 量级），解码/超分/美颜全程不阻塞本线程。
 static const FlutterDesktopPixelBuffer* CopyPixels(size_t w, size_t h, void* user_data) {
   EngineHandle* e = (EngineHandle*)user_data;
+  if (!e) return nullptr;
+  if (!e->out) {
+    e->pb.buffer = g_black_px;
+    e->pb.width = 1;
+    e->pb.height = 1;
+    return &e->pb;
+  }
   int ow = 0, oh = 0;
   const uint8_t* src = nullptr;
   {
@@ -113,9 +121,20 @@ void* domino_create(const char* model_dir, const char* data_root) {
 void domino_destroy(void* h) {
   EngineHandle* e = (EngineHandle*)h;
   if (!e) return;
-  e->player->shutdown();
+  // 先注销像素纹理，避免释放帧输出后 Flutter 光栅线程仍回调 CopyPixels
+  if (e->registrar && e->texture_id >= 0) {
+    FlutterDesktopTextureRegistrarUnregisterExternalTexture(e->registrar, e->texture_id, nullptr, nullptr);
+    e->texture_id = -1;
+  }
+  // 先停任务并 join 编码线程，再关 Player；最后才销毁 NCNN Vulkan 全局实例。
+  if (e->tasks) e->tasks->shutdown();
+  if (e->player) e->player->shutdown();
   delete e->player; e->player = nullptr;
-  delete e->out; e->out = nullptr;
+  EngineFrameOutput* out = e->out;
+  e->out = nullptr;               // 先摘指针，再释放帧输出
+  delete out;
+  e->tasks.reset();               // 任务线程已 join，析构不再等待
+  ncnn::destroy_gpu_instance();
   if (g_engine == e) g_engine = nullptr;
   delete e;
 }
@@ -124,7 +143,10 @@ int domino_open(void* h, const char* path) {
   EngineHandle* e = (EngineHandle*)h;
   return e && e->player && e->player->open(path ? path : "") ? 1 : 0;
 }
-void domino_close(void* h) { if (h) ((EngineHandle*)h)->player->close(); }
+void domino_close(void* h) {
+  EngineHandle* e = (EngineHandle*)h;
+  if (e && e->player) e->player->close();
+}
 int domino_has_video(void* h) { return h && ((EngineHandle*)h)->player->hasVideo() ? 1 : 0; }
 void domino_play(void* h) { if (h) ((EngineHandle*)h)->player->setPaused(false); }
 void domino_pause(void* h) { if (h) ((EngineHandle*)h)->player->setPaused(true); }
@@ -155,7 +177,8 @@ void domino_pump(void* h) {
   // 无锁驱动：presentFrame 内部锁内只做缓冲交换，解码/超分/美颜不阻塞光栅线程
   e->player->pump();
   if (e->out->hasNewFrame()) {
-    FlutterDesktopTextureRegistrarMarkExternalTextureFrameAvailable(e->registrar, e->texture_id);
+    if (e->registrar && e->texture_id >= 0)
+      FlutterDesktopTextureRegistrarMarkExternalTextureFrameAvailable(e->registrar, e->texture_id);
     e->out->clearNewFrame();
   }
 }
@@ -227,6 +250,20 @@ static Task* TaskAt(EngineHandle* e, int idx) {
   if (idx < 0 || idx >= (int)tasks.size()) return nullptr;
   return tasks[idx].get();
 }
+
+// Windows 路径大小写/分隔符不敏感；任务产物正被播放时先关流，否则合并替换会被占用而失败
+static std::string normalizePath(std::string s) {
+  for (auto& c : s) {
+    if (c == '/') c = '\\';
+    if (c >= 'A' && c <= 'Z') c = (char)(c - 'A' + 'a');
+  }
+  return s;
+}
+static void ClosePlayerIfPlaying(EngineHandle* e, const std::string& path) {
+  if (!e || !e->player) return;
+  const std::string& cur = e->player->currentPath();
+  if (!cur.empty() && normalizePath(cur) == normalizePath(path)) e->player->close();
+}
 static void CopyOut(const std::string& s, char* buf, int cap) {
   if (!buf || cap <= 0) return;
   int n = (int)s.size();
@@ -246,15 +283,24 @@ int domino_task_create(void* h, const char* source, int targetW, const char* des
 }
 void domino_task_start(void* h, int idx) {
   EngineHandle* e = (EngineHandle*)h;
-  if (Task* t = TaskAt(e, idx)) e->tasks->start(t);
+  if (Task* t = TaskAt(e, idx)) {
+    ClosePlayerIfPlaying(e, t->temp);
+    e->tasks->start(t);
+  }
 }
 void domino_task_stop(void* h, int idx) {
   EngineHandle* e = (EngineHandle*)h;
-  if (Task* t = TaskAt(e, idx)) e->tasks->stop(t);
+  if (Task* t = TaskAt(e, idx)) {
+    ClosePlayerIfPlaying(e, t->temp);
+    e->tasks->stop(t);
+  }
 }
 void domino_task_remove(void* h, int idx) {
   EngineHandle* e = (EngineHandle*)h;
-  if (Task* t = TaskAt(e, idx)) e->tasks->remove(t);
+  if (Task* t = TaskAt(e, idx)) {
+    ClosePlayerIfPlaying(e, t->temp);
+    e->tasks->remove(t);
+  }
 }
 int domino_task_count(void* h) {
   EngineHandle* e = (EngineHandle*)h;
@@ -299,7 +345,10 @@ int domino_task_temp(void* h, int idx, char* buf, int cap) {
 }
 double domino_task_resume_time(void* h, int idx) {
   Task* t = TaskAt((EngineHandle*)h, idx);
-  return t ? t->resumeTime : 0;
+  if (!t) return 0;
+  // 运行中读 atomic 进度，避免与编码线程写 Task 字段并发
+  if (t->status.load() == ST_RUNNING && t->prog) return t->prog->curTime.load();
+  return t->resumeTime;
 }
 
 // ---- 系统文件选择框 ----

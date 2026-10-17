@@ -8,12 +8,12 @@ ctest --test-dir build -C Release
 ```
 `domino_tests.exe` 覆盖：
 - `decode`：MediaStream 打开/逐帧解码/seek/资源释放幂等/close 复位
-- `encode`：encodeOffline 产物时长、remuxFaststart 进度与时长、断点续编+合并（含时间戳衔接）
-- `task`：任务持久化（meta）/重启扫描/断点恢复/删除；编码线程完成后 join（曾暴露析构 terminate bug）
-- `player`：vsync 对齐呈现截止时间（纯函数）+ 播放状态机冒烟（open/呈现/暂停/seek/EOF，注入哑音频 sink，不依赖 WASAPI）
-- `config`：默认配置与模型路径拼接
+- `encode`：encodeOffline 产物时长、remuxFaststart 进度与时长、断点续编+合并（含时间戳衔接）、检查点滞后时合并不丢尾段
+- `task`：任务持久化（meta）/重启扫描/断点恢复/删除；失败状态与重试（joinable 线程回归）；续编取消保留分段并再次完成；已合并分段不重复拼接；`.merging`/`.bak` 恢复；续编段缺主文件拒绝提升；空描述 meta 解析
+- `player`：vsync 对齐呈现截止时间（纯函数）+ 播放状态机冒烟（open/呈现/暂停/seek/EOF，注入哑音频 sink）；暂停恢复不快进；EOF 内部回卷保留 eof、外部 seek 清除 EOF
+- `config`：默认配置与模型路径拼接（注入目录带/不带末尾分隔符都必须合法）
 - `beauty`：肤色判定/磨皮/美白/全部滤镜预设方向
-- `frame_output`：美颜快路径/双缓冲交换/滤镜缩略图生成
+- `frame_output`：美颜快路径/双缓冲交换/滤镜缩略图生成/垂直高斯上下对称
 - `sr`：NCNN 模型冒烟（无 GPU 时自动跳过）
 
 Flutter 测试（`cd flutter && flutter test`，纯 Dart，无需 DLL）：

@@ -76,6 +76,14 @@ flutter run -d windows             # 开发运行（热重载）
 - `add_custom_command(TARGET ...)` 只能在同一目录；`$<CONFIG>` 在 VS 的 POST_BUILD 里不展开。
 - 播放冻结/无反应先查：`_pump` 是否抛异常（FFI 符号缺失）、DLL 是否最新、`_opening` 是否卡住。
 - **提交前扫敏感信息**：勿把个人绝对路径（`C:\Users\<你>\…`）、密钥/令牌/密码、个人文件路径写进源码或文档。提交前用 `git status` / `git diff` 自检，并扫描：`git grep -n -E "C:/Users|C:\\\\Users|C:/Repos|api[_-]?key|secret|token|password"`。**历史里的敏感信息删提交也删不掉**（需改写历史 + 强推，或删库重建），发布前务必确认。配置/密钥优先走环境变量（如 `DOMINO_MODEL_DIR`）或本地未跟踪文件（`.gitignore`）。
+- **模型目录末尾分隔符**：前端注入的 `model_dir` 可能不带 `\`；一律用 `joinModelPath()`（`src/config.h`）拼接，禁止 `base + "文件名"`。
+- **`TaskCenter::start` 必须先 join 旧线程**：编码线程自然结束后仍 joinable，直接 `t->thread = std::thread(...)` 会 `std::terminate`。失败任务重试是真实触发路径。
+- **暂停恢复必须重置呈现基准**：`setPaused(false)` 要清 `baseWall_/presentedFrames_`，否则墙钟在暂停期间继续走，恢复后会按 pump 频率快进。
+- **GPU 实例只由桥层销毁**：`Player`/`encodeOffline` 不得调用 `ncnn::destroy_gpu_instance()`；`domino_destroy` 先 `tasks->shutdown()`、再 `player->shutdown()`，最后统一销毁，避免与并行 SR 任务冲突。
+- **续编分段不能乱删**：续编取消/失败时保留 `task.mp4.resume`，下次启动先合并再继续；替换主文件必须先备份、失败回滚，禁止静默忽略 `remove/rename` 错误。
+  - `.resume.merging` = 合并中的续编段；`.resume.cont` = 续编段标记（主文件丢失时禁止当首段提升）；`.bak` = 主文件替换备份，启动时先恢复。
+  - 合并幂等按“分段**末**帧是否已被主文件覆盖”判断；不要用首帧（检查点可能落后约 1s，首帧早于主文件末尾是合法重叠）。
+  - 合并/替换前若播放器正打开产物，桥层会先 `Player::close()`；外部程序占用时保留分段并报失败，关闭后重试。
 
 ## 8. 协作模式（角色框架）
 

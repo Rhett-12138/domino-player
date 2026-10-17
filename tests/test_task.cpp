@@ -49,6 +49,205 @@ TEST(TaskPersistenceAndResume) {
   }
 }
 
+// 失败任务必须落到 ST_FAILED；再次点「开始」不能因 joinable 线程 terminate
+TEST(TaskFailureAndRetry) {
+  std::string root = testcfg::dataDir() + "/tasks_fail";
+  std::error_code ec;
+  std::filesystem::remove_all(root, ec);
+
+  TaskCenter tc;
+  tc.init(root);
+  Task* t = tc.create(assetPath("no_such_file.mp4").c_str(), 1280);
+  EXPECT_TRUE(t != nullptr);
+
+  for (int round = 0; round < 2; round++) {
+    tc.start(t);
+    int wait = 0;
+    while (t->status.load() == ST_RUNNING && wait < 100) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(20));
+      wait++;
+    }
+    EXPECT_TRUE(t->status.load() == ST_FAILED);
+  }
+  tc.remove(t);
+}
+
+// 续编被取消时分段必须保留；下次启动先合并旧分段再继续，最终产物完整
+TEST(TaskResumeCancelKeepsSegment) {
+  std::string root = testcfg::dataDir() + "/tasks_resume_cancel";
+  std::error_code ec;
+  std::filesystem::remove_all(root, ec);
+
+  TaskCenter tc;
+  tc.init(root);
+  Task* t = tc.create(assetPath("test_long.mp4").c_str(), 1280);
+  EXPECT_TRUE(t != nullptr);
+  std::string part = t->temp + ".resume";
+
+  // 第一段：从头编码后取消 → 部分主文件
+  tc.start(t);
+  std::this_thread::sleep_for(std::chrono::milliseconds(400));
+  tc.stop(t);
+  EXPECT_TRUE(t->status.load() == ST_PAUSED);
+  EXPECT_TRUE(t->resumeTime > 0.05);
+  EXPECT_TRUE(std::filesystem::exists(t->temp));
+  double firstResume = t->resumeTime;
+
+  // 第二段：续编后取消 → 分段应保留，不能被删除
+  tc.start(t);
+  std::this_thread::sleep_for(std::chrono::milliseconds(200));
+  tc.stop(t);
+  EXPECT_TRUE(t->status.load() == ST_PAUSED);
+  EXPECT_TRUE(t->resumeTime >= firstResume);
+  EXPECT_TRUE(std::filesystem::exists(part));
+
+  // 第三段：启动时合并旧分段，继续到完成
+  tc.start(t);
+  int wait = 0;
+  while (t->status.load() == ST_RUNNING && wait < 600) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    wait++;
+  }
+  EXPECT_TRUE(t->status.load() == ST_DONE);
+  EXPECT_FALSE(std::filesystem::exists(part));
+
+  AVFormatContext* fmt = nullptr;
+  EXPECT_TRUE(avformat_open_input(&fmt, t->temp.c_str(), nullptr, nullptr) >= 0);
+  if (fmt) {
+    avformat_find_stream_info(fmt, nullptr);
+    double d = fmt->duration > 0 ? (double)fmt->duration / AV_TIME_BASE : 0;
+    avformat_close_input(&fmt);
+    EXPECT_NEAR(d, 15.0, 0.6);
+  }
+
+  // 模拟“已合并但清理失败”：再放一个与主文件相同内容的分段，重启后应识别为已合并，
+  // 只清理分段，不能把内容再拼一遍（否则时长约 30s）。
+  std::error_code ec2;
+  std::filesystem::copy_file(t->temp, part, std::filesystem::copy_options::overwrite_existing, ec2);
+  EXPECT_TRUE(!ec2);
+  tc.start(t);
+  wait = 0;
+  while (t->status.load() == ST_RUNNING && wait < 300) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    wait++;
+  }
+  EXPECT_TRUE(t->status.load() == ST_DONE);
+  EXPECT_FALSE(std::filesystem::exists(part));
+  fmt = nullptr;
+  EXPECT_TRUE(avformat_open_input(&fmt, t->temp.c_str(), nullptr, nullptr) >= 0);
+  if (fmt) {
+    avformat_find_stream_info(fmt, nullptr);
+    double d = fmt->duration > 0 ? (double)fmt->duration / AV_TIME_BASE : 0;
+    avformat_close_input(&fmt);
+    EXPECT_NEAR(d, 15.0, 0.6);   // 若重复拼接会接近 30s
+  }
+}
+
+// 主文件丢失时，带 .cont 标记的续编分段不能被当作首段提升（否则会静默丢掉前半段）
+TEST(TaskContinuationWithoutMainFails) {
+  std::string root = testcfg::dataDir() + "/tasks_cont";
+  std::error_code ec;
+  std::filesystem::remove_all(root, ec);
+
+  TaskCenter tc;
+  tc.init(root);
+  Task* t = tc.create(assetPath("test_av.mp4").c_str(), 1280);
+  EXPECT_TRUE(t != nullptr);
+  std::string part = t->temp + ".resume";
+  EXPECT_TRUE(std::filesystem::copy_file(assetPath("test_av.mp4"), part, ec));
+  FILE* mark = fopen((part + ".cont").c_str(), "wb");
+  EXPECT_TRUE(mark != nullptr);
+  if (mark) fclose(mark);
+  t->resumeTime = 1.0;
+  t->startFrame = 30;
+  tc.save(t);
+
+  tc.start(t);
+  int wait = 0;
+  while (t->status.load() == ST_RUNNING && wait < 100) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    wait++;
+  }
+  EXPECT_TRUE(t->status.load() == ST_FAILED);
+  EXPECT_TRUE(std::filesystem::exists(part));   // 保留分段供人工恢复
+  tc.remove(t);
+}
+
+// 合并恢复文件：.merging 已合并时只清理；.bak 在主文件缺失时恢复
+TEST(TaskMergeRecoveryFiles) {
+  std::string root = testcfg::dataDir() + "/tasks_merge_recovery";
+  std::error_code ec;
+  std::filesystem::remove_all(root, ec);
+
+  TaskCenter tc;
+  tc.init(root);
+  Task* t = tc.create(assetPath("test_av.mp4").c_str(), 1280);
+  EXPECT_TRUE(t != nullptr);
+
+  // 先完成一个 2s 任务，得到完整主文件
+  tc.start(t);
+  int wait = 0;
+  while (t->status.load() == ST_RUNNING && wait < 200) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    wait++;
+  }
+  EXPECT_TRUE(t->status.load() == ST_DONE);
+
+  // 模拟“已合并但未清理”的 .merging：内容与主文件相同，重启后应只清理，不应重复拼接
+  std::string merging = t->temp + ".resume.merging";
+  EXPECT_TRUE(std::filesystem::copy_file(t->temp, merging,
+    std::filesystem::copy_options::overwrite_existing, ec));
+  t->resumeTime = 2.0;
+  t->startFrame = 60;
+  tc.save(t);
+  tc.start(t);
+  wait = 0;
+  while (t->status.load() == ST_RUNNING && wait < 200) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    wait++;
+  }
+  EXPECT_TRUE(t->status.load() == ST_DONE);
+  EXPECT_FALSE(std::filesystem::exists(merging));
+
+  // 模拟替换主文件时崩溃：只剩 .bak，启动后应恢复为主文件
+  std::string bak = t->temp + ".bak";
+  std::filesystem::rename(t->temp, bak, ec);
+  EXPECT_TRUE(!ec);
+  tc.start(t);
+  wait = 0;
+  while (t->status.load() == ST_RUNNING && wait < 200) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    wait++;
+  }
+  EXPECT_TRUE(t->status.load() == ST_DONE);
+  EXPECT_TRUE(std::filesystem::exists(t->temp));
+  EXPECT_FALSE(std::filesystem::exists(bak));
+  tc.remove(t);
+}
+
+// meta 中空描述不能读到未初始化内存
+TEST(TaskMetaEmptyDescription) {
+  std::string root = testcfg::dataDir() + "/tasks_meta_desc";
+  std::error_code ec;
+  std::filesystem::remove_all(root, ec);
+
+  TaskCenter tc;
+  tc.init(root);
+  Task* t = tc.create(assetPath("test_av.mp4").c_str(), 1280);
+  EXPECT_TRUE(t != nullptr);
+  EXPECT_STREQ(t->description.c_str(), "");
+
+  TaskCenter fresh;
+  fresh.init(root);
+  Task* loaded = nullptr;
+  for (auto& tp : fresh.tasks()) if (tp->id == t->id) loaded = tp.get();
+  EXPECT_TRUE(loaded != nullptr);
+  if (loaded) {
+    EXPECT_STREQ(loaded->description.c_str(), "");
+    EXPECT_NEAR(loaded->resumeTime, 0.0, 1e-9);
+  }
+}
+
 // 带超分的任务应跑到完成（回归"卡在最后一帧"：确认引擎侧能到 ST_DONE）
 TEST(TaskWithSRCompletes) {
   std::string root = testcfg::dataDir() + "/tasks_sr";

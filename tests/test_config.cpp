@@ -17,6 +17,12 @@ TEST(ConfigPathInjection) {
   EXPECT_STREQ(c.srParam().c_str(), "C:/models/RealESRGAN_General_x4_v3.param");
   EXPECT_STREQ(c.srBin().c_str(), "C:/models/RealESRGAN_General_x4_v3.bin");
 
+  // 前端 Dart 传入的目录通常不带分隔符，必须自动补全
   c.modelBase = "C:/models";
-  EXPECT_STREQ(c.srParam().c_str(), "C:/modelsRealESRGAN_General_x4_v3.param");  // 无分隔符由调用方负责
+  EXPECT_STREQ(c.srParam().c_str(), "C:/models/RealESRGAN_General_x4_v3.param");
+  EXPECT_STREQ(c.srBin().c_str(), "C:/models/RealESRGAN_General_x4_v3.bin");
+
+  c.modelBase = "C:\\models";
+  EXPECT_STREQ(c.srParam().c_str(), "C:\\models/RealESRGAN_General_x4_v3.param");
+  EXPECT_STREQ(joinModelPath("", "x.bin").c_str(), "x.bin");
 }

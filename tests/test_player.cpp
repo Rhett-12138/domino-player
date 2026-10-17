@@ -85,6 +85,69 @@ TEST(PlayerSmoke) {
   EXPECT_FALSE(p.hasVideo());
 }
 
+// 暂停后恢复：呈现基准应重置，不能按 pump 频率快进追暂停期间丢失的墙钟
+TEST(PlayerPauseResumeClock) {
+  EngineFrameOutput out;
+  Player p(out);
+  p.setAudioSink(std::make_unique<DummyAudioSink>());
+  p.setNoSR(true);
+  p.setConfig(Config::defaults());
+  EXPECT_TRUE(p.open(assetPath("test_long.mp4").c_str()));
+
+  auto playFor = [&](int ms) {
+    auto t0 = std::chrono::steady_clock::now();
+    while (std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count() < ms / 1000.0) {
+      p.pump();
+      sleepMs(10);
+    }
+  };
+
+  playFor(700);
+  double before = p.position();
+  p.setPaused(true);
+  sleepMs(1200);
+  p.setPaused(false);
+  playFor(800);
+  double delta = p.position() - before;
+  EXPECT_TRUE(delta > 0.5);   // 恢复后确实在播放
+  EXPECT_TRUE(delta < 1.2);   // 不应把暂停的 1.2s 也快进掉（旧实现约 2.0+）
+  p.close();
+}
+
+// EOF 内部回卷：下一帧处理 seek 后位置回 0，但 eof_ 必须保留；重新播放才清除
+TEST(PlayerEofInternalRewind) {
+  EngineFrameOutput out;
+  Player p(out);
+  p.setAudioSink(std::make_unique<DummyAudioSink>());
+  p.setNoSR(true);
+  p.setConfig(Config::defaults());
+  EXPECT_TRUE(p.open(assetPath("test_av.mp4").c_str()));
+  for (int i = 0; i < 300 && !p.eof(); i++) { p.pump(); sleepMs(10); }
+  EXPECT_TRUE(p.eof());
+  p.pump();                       // 处理 EOF 内部 seek(0)
+  EXPECT_TRUE(p.eof());           // 仍处于 EOF，供前端判断循环
+  EXPECT_TRUE(p.position() <= 0.05);
+  p.setPaused(false);             // 重新播放才脱离 EOF
+  EXPECT_FALSE(p.eof());
+  p.close();
+}
+
+// 外部 seek 应清除 EOF；EOF 内部回卷则保留 EOF 供前端做循环
+TEST(PlayerExternalSeekClearsEof) {
+  EngineFrameOutput out;
+  Player p(out);
+  p.setAudioSink(std::make_unique<DummyAudioSink>());
+  p.setNoSR(true);
+  p.setConfig(Config::defaults());
+  EXPECT_TRUE(p.open(assetPath("test_av.mp4").c_str()));
+  for (int i = 0; i < 300 && !p.eof(); i++) { p.pump(); sleepMs(10); }
+  EXPECT_TRUE(p.eof());
+  p.requestSeek(0.5);
+  p.pump();
+  EXPECT_FALSE(p.eof());
+  p.close();
+}
+
 // 未打开文件时 pump/close/seek 应安全（幂等）
 TEST(PlayerIdempotentBeforeOpen) {
   EngineFrameOutput out;

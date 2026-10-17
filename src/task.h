@@ -23,7 +23,6 @@ struct Task {
   long long createdAt = 0;
   double resumeTime = 0;      // 断点续编：上次编码到的源时间（秒）
   long long startFrame = 0;   // 断点续编：帧号偏移
-  std::atomic<bool> fileFree{ false };  // 直播播放已释放 task.mp4 句柄（供续编合并替换文件）
   std::thread thread;         // 编码线程（start 后可 join）
   bool threadJoined = false;
   std::unique_ptr<EncodeProgress> prog;  // 编码进度（atomic 不可拷贝，用指针）
@@ -35,12 +34,14 @@ struct Task {
 // 任务中心：每任务一个文件夹，元数据存 meta.tsv，持久化到 %APPDATA%/DominoPlayer/sr-tasks
 class TaskCenter {
 public:
+  ~TaskCenter() { shutdown(); }             // 兜底：线程 lambda 捕获 this，不能让它活过 TaskCenter
   void init(const std::string& root = "");  // 数据根目录（空=Config 默认 %APPDATA%/DominoPlayer）
   void save(Task* t);        // 写单个任务的 meta.tsv
   Task* create(const char* source, int targetW);
   void start(Task* t);       // 启动编码线程（有检查点则断点续编）
   void stop(Task* t);        // 取消并等待线程结束，记录断点
   void remove(Task* t);      // 停止 + 递归删除任务文件夹
+  void shutdown();           // 停止所有任务并等待线程结束（退出前调用，之后才能销毁 GPU）
   Task* running();           // 当前运行的任务（无则 nullptr）
   void setPreview(EncodePreviewFn fn, void* ud) { previewFn_ = fn; previewUd_ = ud; }
   // 超分模型目录（前端注入；空则用 Config::defaults()）

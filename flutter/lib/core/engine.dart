@@ -75,8 +75,14 @@ class DominoEngine implements EngineApi {
 
   // ---- 生命周期 ----
   static DominoEngine create(String modelDir, String dataRoot) {
-    final h = _create(modelDir.toNativeUtf8(), dataRoot.toNativeUtf8());
-    return DominoEngine._(h);
+    final model = modelDir.toNativeUtf8();
+    final data = dataRoot.toNativeUtf8();
+    try {
+      return DominoEngine._(_create(model, data));
+    } finally {
+      calloc.free(model);
+      calloc.free(data);
+    }
   }
 
   void dispose() => _destroy(_h);

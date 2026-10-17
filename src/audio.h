@@ -12,6 +12,7 @@
 // WASAPI 共享模式音频输出（Windows 实现 AudioSink）
 class WasapiAudioOut : public AudioSink {
 public:
+  ~WasapiAudioOut() override;
   bool init() override;
   bool start() override;
   void stop() override;
@@ -25,7 +26,9 @@ public:
 private:
   static DWORD WINAPI renderThread(LPVOID p);
   void renderLoop();
+  void release();
 
+  bool comInit_ = false;
   IMMDevice* dev_ = nullptr;
   IAudioClient* client_ = nullptr;
   IAudioRenderClient* render_ = nullptr;

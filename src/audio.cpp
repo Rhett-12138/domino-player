@@ -2,13 +2,30 @@
 #include <cstdio>
 #include <cstring>
 
-#define CHK(x) do { HRESULT hr_ = (x); if (FAILED(hr_)) { fprintf(stderr, "audio err 0x%08x %s\n", (unsigned)hr_, #x); return false; } } while (0)
+#define CHK(x) do { HRESULT hr_ = (x); if (FAILED(hr_)) { fprintf(stderr, "audio err 0x%08x %s\n", (unsigned)hr_, #x); release(); return false; } } while (0)
+
+WasapiAudioOut::~WasapiAudioOut() {
+  stop();
+  if (comInit_) CoUninitialize();
+}
 
 bool WasapiAudioOut::init() {
-  CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+  stop();   // 重复打开视频时先释放上一次的 COM/事件资源
+  if (!comInit_) {
+    HRESULT hr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+    if (SUCCEEDED(hr) || hr == S_FALSE) comInit_ = true;
+  }
   IMMDeviceEnumerator* enumerator = nullptr;
   CHK(CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr, CLSCTX_ALL, IID_PPV_ARGS(&enumerator)));
-  CHK(enumerator->GetDefaultAudioEndpoint(eRender, eConsole, &dev_));
+  HRESULT eh = enumerator->GetDefaultAudioEndpoint(eRender, eConsole, &dev_);
+  if (FAILED(eh)) {
+    fprintf(stderr, "audio err 0x%08x GetDefaultAudioEndpoint\n", (unsigned)eh);
+    enumerator->Release();
+    release();
+    return false;
+  }
+  enumerator->Release();
+  enumerator = nullptr;
   CHK(dev_->Activate(__uuidof(IAudioClient), CLSCTX_ALL, nullptr, (void**)&client_));
 
   WAVEFORMATEX* mix = nullptr;
@@ -35,18 +52,30 @@ bool WasapiAudioOut::init() {
 }
 
 bool WasapiAudioOut::start() {
+  if (!client_ || thread_) return false;
   running_ = true;
   thread_ = CreateThread(nullptr, 0, renderThread, this, 0, nullptr);
+  if (!thread_) { running_ = false; return false; }
   client_->Start();
-  return thread_ != nullptr;
+  return true;
 }
 
 void WasapiAudioOut::stop() {
   running_ = false;
   if (evt_) SetEvent(evt_);
-  if (thread_) { WaitForSingleObject(thread_, 1000); CloseHandle(thread_); thread_ = nullptr; }
+  // 必须等渲染线程完全退出后才能释放 client_/render_，避免 use-after-free
+  if (thread_) { WaitForSingleObject(thread_, INFINITE); CloseHandle(thread_); thread_ = nullptr; }
   if (client_) client_->Stop();
+  release();
+}
+
+void WasapiAudioOut::release() {
   if (clockI_) { clockI_->Release(); clockI_ = nullptr; }
+  if (render_) { render_->Release(); render_ = nullptr; }
+  if (client_) { client_->Release(); client_ = nullptr; }
+  if (dev_) { dev_->Release(); dev_ = nullptr; }
+  if (evt_) { CloseHandle(evt_); evt_ = nullptr; }
+  bufferFrames_ = 0;
 }
 
 void WasapiAudioOut::pause() {

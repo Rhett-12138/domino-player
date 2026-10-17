@@ -13,7 +13,6 @@ extern "C" {
 #include <libswscale/swscale.h>
 #include <libavutil/opt.h>
 #include <libavutil/imgutils.h>
-#include <ncnn/gpu.h>
 }
 
 bool encodeOffline(const char* srcPath, const char* outPath, int targetW, const EncodeOptions& opts) {
@@ -55,8 +54,9 @@ bool encodeOffline(const char* srcPath, const char* outPath, int targetW, const 
   SR sr;
   if (needSR) {
     const std::string base = opts.modelBase.empty() ? Config::defaults().modelBase : opts.modelBase;
-    if (!sr.init((base + "RealESRGAN_General_x4_v3.param").c_str(),
-                 (base + "RealESRGAN_General_x4_v3.bin").c_str())) {
+    const std::string param = joinModelPath(base, "RealESRGAN_General_x4_v3.param");
+    const std::string bin = joinModelPath(base, "RealESRGAN_General_x4_v3.bin");
+    if (!sr.init(param.c_str(), bin.c_str())) {
       fprintf(stderr, "sr init failed\n");
       return false;
     }
@@ -217,7 +217,7 @@ bool encodeOffline(const char* srcPath, const char* outPath, int targetW, const 
     cancelled ? "CANCELLED" : "DONE", count, count / el, outW, outH, oas ? 1 : 0, outPath);
   if (prog) { prog->fps.store(count / el); prog->done.store(true); prog->success.store(!cancelled); }
 
-  if (needSR) { sr.clear(); ncnn::destroy_gpu_instance(); }
+  if (needSR) sr.clear();   // 全局 GPU 实例由前端统一管理
   return !cancelled;
 }
 
@@ -299,29 +299,49 @@ bool mergeToMp4(const char* mainPath, const char* partPath, const char* outPath)
   // 续编段：缓冲全部包，每流计算固定偏移使 dts 从主段末尾衔接
   std::vector<AVPacket*> partPkts;
   std::vector<int64_t> partFirstDts(out.p->nb_streams, AV_NOPTS_VALUE);
+  std::vector<int64_t> partLastDts(out.p->nb_streams, AV_NOPTS_VALUE);
   while (av_read_frame(in2.p, pkt.p) >= 0) {
     int si = pkt.p->stream_index;
     if (si < (int)in2.p->nb_streams && si < (int)out.p->nb_streams) {
       av_packet_rescale_ts(pkt.p, in2.p->streams[si]->time_base, out.p->streams[si]->time_base);
       pkt.p->stream_index = si;
       if (partFirstDts[si] == AV_NOPTS_VALUE) partFirstDts[si] = pkt.p->dts;
+      if (pkt.p->dts != AV_NOPTS_VALUE &&
+          (partLastDts[si] == AV_NOPTS_VALUE || pkt.p->dts > partLastDts[si]))
+        partLastDts[si] = pkt.p->dts;
       partPkts.push_back(av_packet_clone(pkt.p));
     }
     av_packet_unref(pkt.p);
   }
-  std::vector<int64_t> off(out.p->nb_streams, 0);
+  // 幂等合并：只有“主文件末尾已经覆盖分段末尾”才说明该段已合并过（上次替换后未清理）。
+  // 不能用分段首帧判断：检查点每秒落盘，崩溃后分段起点可能比主文件末尾早 ~1s，
+  // 那仍是需要追加的合法内容。
+  bool alreadyMerged = true;
+  bool compared = false;
   for (unsigned i = 0; i < out.p->nb_streams; i++) {
-    if (mainMaxDts[i] != AV_NOPTS_VALUE && partFirstDts[i] != AV_NOPTS_VALUE)
-      off[i] = mainMaxDts[i] + 1 - partFirstDts[i];
+    if (mainMaxDts[i] == AV_NOPTS_VALUE || partLastDts[i] == AV_NOPTS_VALUE) continue;
+    compared = true;
+    const int64_t tol = av_rescale_q(1, AVRational{ 1, 10 }, out.p->streams[i]->time_base);
+    if (mainMaxDts[i] + tol < partLastDts[i]) { alreadyMerged = false; break; }
   }
-  for (AVPacket* pp : partPkts) {
-    int si = pp->stream_index;
-    if (off[si] != 0) {
-      if (pp->dts != AV_NOPTS_VALUE) pp->dts += off[si];
-      if (pp->pts != AV_NOPTS_VALUE) pp->pts += off[si];
+  if (!compared) alreadyMerged = false;
+  if (!alreadyMerged) {
+    std::vector<int64_t> off(out.p->nb_streams, 0);
+    for (unsigned i = 0; i < out.p->nb_streams; i++) {
+      if (mainMaxDts[i] != AV_NOPTS_VALUE && partFirstDts[i] != AV_NOPTS_VALUE)
+        off[i] = mainMaxDts[i] + 1 - partFirstDts[i];
     }
-    av_interleaved_write_frame(out.p, pp);
-    av_packet_free(&pp);
+    for (AVPacket* pp : partPkts) {
+      int si = pp->stream_index;
+      if (off[si] != 0) {
+        if (pp->dts != AV_NOPTS_VALUE) pp->dts += off[si];
+        if (pp->pts != AV_NOPTS_VALUE) pp->pts += off[si];
+      }
+      av_interleaved_write_frame(out.p, pp);
+      av_packet_free(&pp);
+    }
+  } else {
+    for (AVPacket* pp : partPkts) av_packet_free(&pp);
   }
 
   av_write_trailer(out.p);

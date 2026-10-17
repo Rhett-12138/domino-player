@@ -5,7 +5,6 @@
 #include <cstring>
 #include <cmath>
 #include <algorithm>
-#include <ncnn/gpu.h>
 
 Player::Player(IFrameOutput& out) : out_(out) {
   audio_ = createDefaultAudioSink();   // 默认 WASAPI；可经 setAudioSink 注入其他实现
@@ -19,8 +18,8 @@ void Player::shutdown() {
   stopAudio();
   vid_.close();
   aud_.close();
-  sr_.clear();
-  ncnn::destroy_gpu_instance();
+  currentPath_.clear();
+  sr_.clear();   // 全局 GPU 实例由前端在停止所有任务后统一销毁
 }
 
 void Player::audioFeedStatic(Player* self) { self->audioFeed(); }
@@ -37,7 +36,7 @@ void Player::audioFeed() {
       if (resampler) { swr_free(&resampler); resampler = nullptr; }
       resetAudio_ = false;
     }
-    if (paused_) { std::this_thread::sleep_for(std::chrono::milliseconds(10)); continue; }
+    if (paused_.load()) { std::this_thread::sleep_for(std::chrono::milliseconds(10)); continue; }
 
     // 缓冲音频最多超前 ~120ms，避免解码抢跑导致 A/V 漂移/缓冲溢出
     if (audio_->bufferedFrames() > (size_t)(audio_->deviceRate * 0.12)) {
@@ -69,7 +68,7 @@ void Player::audioFeed() {
     int outN = swr_convert(resampler, &odata, maxOut, &idata, n);
     if (outN > 0) {
       // 音量
-      float v = (float)volume_;
+      float v = (float)volume_.load();
       if (v != 1.f)
         for (int i = 0; i < outN * audio_->deviceChannels; i++) dstBuf[i] *= v;
       audio_->push(dstBuf.data(), outN);
@@ -90,7 +89,9 @@ bool Player::open(const std::string& path) {
   stopAudio();
   vid_.close();
   aud_.close();
+  currentPath_.clear();
   if (!vid_.open(path.c_str())) return false;
+  currentPath_ = path;
   ensureSR();
   duration_ = vid_.duration;
   fps_ = vid_.fps;
@@ -98,9 +99,12 @@ bool Player::open(const std::string& path) {
     hasAudio_ = true;
   else
     hasAudio_ = false;
-  paused_ = false;
+  paused_.store(false);
   playhead_ = 0;
   eof_ = false;
+  seekPending_.store(false);
+  eofSeek_ = false;
+  seekTarget_ = 0;
   frameDur_ = fps_ > 0 ? 1.0 / fps_ : 1.0 / 30.0;
   havePending_ = false;
   pendingEOF_ = false;
@@ -118,6 +122,7 @@ void Player::close() {
   stopAudio();
   vid_.close();
   aud_.close();
+  currentPath_.clear();
   playhead_ = 0;
   duration_ = 0;
   fps_ = 30;
@@ -129,6 +134,7 @@ void Player::requestSeek(double t) {
   if (t < 0) t = 0;
   if (t > duration_) t = duration_;
   seekTarget_ = t;
+  eofSeek_ = false;   // 外部 seek 后应脱离 EOF 态
   seekPending_.store(true);
 }
 
@@ -146,13 +152,22 @@ bool Player::processSeek() {
   seekInternal(seekTarget_);
   presentedFrames_ = 0;
   baseWall_ = 0;
+  if (eofSeek_)
+    eofSeek_ = false;   // EOF 内部回卷：保留 eof_ 供前端判断
+  else
+    eof_ = false;
   return true;
 }
 
 void Player::setPaused(bool p) {
-  if (paused_ == p) return;
-  paused_ = p;
-  if (!p) eof_ = false;   // 重新播放即脱离 EOF 态
+  if (paused_.load() == p) return;
+  paused_.store(p);
+  if (!p) {
+    eof_ = false;   // 重新播放即脱离 EOF 态
+    // 暂停期间墙钟仍在走，恢复时必须重置呈现基准，否则会按 pump 频率快进追帧
+    presentedFrames_ = 0;
+    baseWall_ = 0;
+  }
   if (hasAudio_) {
     if (p) {
       audio_->pause();
@@ -239,7 +254,7 @@ bool Player::presentFrame() {
 void Player::pump() {
   if (!hasVideo()) return;
   processSeek();
-  if (paused_) return;
+  if (paused_.load()) return;
   prefetch();
   if (readyToPresent()) {
     if (presentFrame()) startAudio();   // 第一帧呈现时启动音频
@@ -250,10 +265,12 @@ void Player::pump() {
 Player::EofAction Player::handleEof() {
   if (!pendingEOF_ || havePending_) return EofAction::None;
   if (liveActive()) return EofAction::LivePresent;  // 上层处理预览/完成
-  // 非直播：暂停并回起点
+  // 非直播：暂停并回起点（内部回卷不经过 requestSeek，避免清掉 eof_）
   eof_ = true;              // 暴露"已到结尾"（前端据此实现循环/重播）
-  paused_ = true;
-  requestSeek(0);
+  setPaused(true);          // 同时暂停音频 sink
+  seekTarget_ = 0;
+  eofSeek_ = true;
+  seekPending_.store(true);
   havePending_ = false;
   return EofAction::Pause;
 }
@@ -262,13 +279,6 @@ void Player::updateLiveProgress(double frames, double fps) {
   if (fps <= 0) return;
   playhead_ = frames / fps;
   if (playhead_ > duration_) duration_ = playhead_;
-}
-
-void Player::releaseForMerge(std::atomic<bool>* fileFree) {
-  vid_.close();
-  aud_.close();
-  stopAudio();
-  fileFree->store(true);
 }
 
 void Player::beginRender() { out_.beginPresent(); }

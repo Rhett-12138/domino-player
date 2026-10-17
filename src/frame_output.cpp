@@ -48,13 +48,14 @@ void EngineFrameOutput::applyBeautyCpu(const uint8_t* src, int w, int h,
     std::memcpy(dst.data(), src, (size_t)n * 3);
     return;
   }
-  std::vector<uint8_t> blur;
+  std::vector<uint8_t> blur, blur2;
   int radius = doSmooth ? (int)std::lround(bp.smooth * 4.0f) : 0;
   if (doSmooth && radius > 0) {
     gaussian1D(src, w, h, radius, true, blur);
-    gaussian1D(blur.data(), w, h, radius, false, blur);
+    // 垂直 pass 必须用独立输出缓冲：原地卷积会边写边读，产生方向性拖影
+    gaussian1D(blur.data(), w, h, radius, false, blur2);
   }
-  const uint8_t* b = (doSmooth && !blur.empty()) ? blur.data() : src;
+  const uint8_t* b = blur2.empty() ? src : blur2.data();
   const bool needSkin = doSmooth || doWhite;          // 仅滤镜时跳过肤色判定（主要开销）
   const float fIdx = (float)bp.filterIdx, fAmt = bp.filterAmt;
 

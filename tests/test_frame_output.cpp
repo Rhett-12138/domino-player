@@ -44,6 +44,44 @@ TEST(FrameOutputBeauty) {
   EXPECT_TRUE(memcmp(fo.frame(), px.data(), 64 * 36 * 3) != 0);
 }
 
+// 垂直高斯 pass 不能原地卷积：输入关于水平中轴对称时，输出也必须保持对称
+TEST(FrameOutputBeautyVerticalSymmetric) {
+  const int w = 64, h = 64;
+  std::vector<uint8_t> px((size_t)w * h * 3);
+  for (int y = 0; y < h; y++) {
+    for (int x = 0; x < w; x++) {
+      int i = (y * w + x) * 3;
+      bool band = (y >= 30 && y <= 33);
+      px[i + 0] = band ? 185 : 200;
+      px[i + 1] = band ? 145 : 160;
+      px[i + 2] = band ? 115 : 130;
+    }
+  }
+  EngineFrameOutput fo;
+  EngineBeautyParams bp;
+  bp.smooth = 0.5f;   // radius = 2
+  bp.white = 0.f;
+  bp.filterIdx = 0;
+  fo.setBeautyParams(bp);
+  fo.presentFrame(px.data(), w, h);
+
+  std::lock_guard<std::mutex> lk(fo.lock());
+  const uint8_t* out = fo.frame();
+  int maxDiff = 0;
+  for (int y = 0; y < h; y++) {
+    int my = h - 1 - y;
+    for (int x = 0; x < w; x++) {
+      for (int c = 0; c < 3; c++) {
+        int a = out[(y * w + x) * 3 + c];
+        int b = out[(my * w + x) * 3 + c];
+        int d = a > b ? a - b : b - a;
+        if (d > maxDiff) maxDiff = d;
+      }
+    }
+  }
+  EXPECT_TRUE(maxDiff <= 2);   // 旧实现会因边写边读产生明显上下不对称
+}
+
 // 双缓冲交换：连续两帧不同内容，frame() 应反映最新帧
 TEST(FrameOutputSwapLatest) {
   EngineFrameOutput fo;

@@ -450,4 +450,24 @@ void main() {
     expect(find.text('打开失败：文件不存在或无法解码'), findsOneWidget);
     await _dispose(tester);
   });
+
+  testWidgets('任务中心：失败任务显示失败与重试，点击重试重新启动', (WidgetTester tester) async {
+    final engine = FakeEngine();
+    engine.tasks.add(_FakeTask(status: 4, total: 100, temp: 'C:/out/fail.mp4'));
+    await tester.pumpWidget(MaterialApp(
+      home: TaskCenterScreen(engine: engine, onPlay: (_) {}),
+    ));
+    await tester.pump();
+
+    expect(find.text('失败'), findsOneWidget);
+    expect(find.text('失败 · 已编码 0 帧'), findsOneWidget);
+    expect(find.text('重试'), findsOneWidget);
+
+    await tester.tap(find.text('重试'));
+    await tester.pump();
+    expect(engine.tasks.first.status, 1);       // 已重新启动
+    await tester.pump(const Duration(milliseconds: 350));
+    expect(find.text('进行中'), findsOneWidget);
+    await _dispose(tester);
+  });
 }
