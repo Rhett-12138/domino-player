@@ -155,6 +155,10 @@ void TaskCenter::init(const std::string& root) {
           if (sscanf(extra, "sr_input=%d", &qi) != 1) qi = -1;
         }
         tp->srInput = qualityFromInt(qi);
+        char modelTag[64] = {};
+        if (fgets(extra, sizeof(extra), f) && sscanf(extra, "model=%63s", modelTag) == 1) {
+          tp->model = srModelFromId(modelTag);
+        }
         tasks_.push_back(std::move(tp));
       }
     }
@@ -175,15 +179,17 @@ void TaskCenter::save(Task* t) {
     t->id.c_str(), t->source.c_str(), t->targetW, t->status.load(),
     t->frames, t->fps, t->createdAt, t->totalFrames, t->resumeTime, t->startFrame, t->description.c_str());
   fprintf(f, "sr_input=%d\n", (int)t->srInput);
+  fprintf(f, "model=%s\n", srModelId(t->model));
   fclose(f);
 }
 
-Task* TaskCenter::create(const char* source, int targetW, SRInputQuality quality) {
+Task* TaskCenter::create(const char* source, int targetW, SRInputQuality quality, SRModel model) {
   auto tp = std::make_unique<Task>();
   tp->id = nowId();
   tp->source = source;
   tp->targetW = targetW;
   tp->srInput = quality;
+  tp->model = model;
   tp->folder = dir_ + "/" + tp->id;
   tp->temp = tp->folder + "/task.mp4";
   tp->createdAt = (long long)time(nullptr);
@@ -210,6 +216,7 @@ void TaskCenter::start(Task* t) {
   eo.preview = previewFn_;
   eo.previewUserdata = previewUd_;
   eo.modelBase = modelBase_.empty() ? Config::defaults().modelBase : modelBase_;
+  eo.model = t->model;
   eo.srInput = t->srInput;
   std::string partPath = t->temp + ".resume";
   std::string tmpPath = t->temp + ".merged";

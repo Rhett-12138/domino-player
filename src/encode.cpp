@@ -84,8 +84,8 @@ bool encodeOffline(const char* srcPath, const char* outPath, int targetW, const 
   SR sr;
   if (needSR) {
     const std::string base = opts.modelBase.empty() ? Config::defaults().modelBase : opts.modelBase;
-    const std::string param = joinModelPath(base, "RealESRGAN_General_x4_v3.param");
-    const std::string bin = joinModelPath(base, "RealESRGAN_General_x4_v3.bin");
+    const std::string param = joinModelPath(base, srModelParamName(opts.model));
+    const std::string bin = joinModelPath(base, srModelBinName(opts.model));
     if (!sr.init(param.c_str(), bin.c_str())) {
       fprintf(stderr, "sr init failed\n");
       return false;

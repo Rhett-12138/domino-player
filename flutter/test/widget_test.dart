@@ -18,6 +18,7 @@ class FakeEngine implements EngineApi {
   String? lastOpened;
   int createCalls = 0;
   int lastTaskQuality = 2;
+  int lastTaskContent = 0;
   String? dialogResult = r'C:\picked\movie.mp4';
 
   final List<_FakeTask> tasks = [];
@@ -128,10 +129,11 @@ class FakeEngine implements EngineApi {
   double get fps => 30;
 
   @override
-  int taskCreate(String source, int targetW, String desc, {int quality = 2}) {
+  int taskCreate(String source, int targetW, String desc, {int quality = 2, int content = 0}) {
     createCalls++;
     lastTaskQuality = quality;
-    tasks.add(_FakeTask(status: 0, total: 100, temp: 'C:/out/${tasks.length}.mp4'));
+    lastTaskContent = content;
+    tasks.add(_FakeTask(status: 0, total: 100, temp: 'C:/out/${tasks.length}.mp4', model: content));
     return tasks.length - 1;
   }
 
@@ -149,6 +151,9 @@ class FakeEngine implements EngineApi {
 
   @override
   int taskStatus(int idx) => tasks[idx].status;
+
+  @override
+  int taskModel(int idx) => tasks[idx].model;
 
   @override
   int taskFrames(int idx) => tasks[idx].frames;
@@ -182,8 +187,9 @@ class FakeEngine implements EngineApi {
 }
 
 class _FakeTask {
-  _FakeTask({required this.status, required this.total, required this.temp});
+  _FakeTask({required this.status, required this.total, required this.temp, this.model = 0});
   int status;
+  int model;
   int frames = 0;
   int total;
   String temp;
@@ -233,6 +239,7 @@ void main() {
     await tester.pump();
     expect(engine.createCalls, 1);
     expect(engine.lastTaskQuality, 2);
+    expect(engine.lastTaskContent, 0);
     expect(engine.tasks.length, 1);
     expect(engine.tasks.first.status, 1); // 自动启动
     expect(find.text('video0.mp4'), findsOneWidget);
@@ -538,6 +545,24 @@ void main() {
     expect(find.text('快速'), findsOneWidget);
     expect(find.text('平衡'), findsOneWidget);
     expect(find.text('高质量'), findsWidgets);
+    await _dispose(tester);
+  });
+
+  testWidgets('Task center: content dropdown offers realistic and anime', (WidgetTester tester) async {
+    final engine = FakeEngine();
+    await tester.pumpWidget(MaterialApp(
+      home: TaskCenterScreen(engine: engine, onPlay: (_) {}),
+    ));
+    await tester.pump();
+    await tester.tap(find.byIcon(Icons.add));
+    await tester.pump();
+    expect(find.text('真人/实拍'), findsOneWidget);
+    await tester.tap(find.text('真人/实拍'));
+    await tester.pump();
+    expect(find.text('动画'), findsOneWidget);
+    await tester.tap(find.text('动画'));
+    await tester.pump();
+    expect(find.text('动画'), findsOneWidget);
     await _dispose(tester);
   });
 

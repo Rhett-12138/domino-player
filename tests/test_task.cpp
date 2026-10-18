@@ -255,7 +255,8 @@ TEST(TaskQualityPersists) {
   std::filesystem::remove_all(root, ec);
   TaskCenter tc;
   tc.init(root);
-  Task* t = tc.create(assetPath("test_av.mp4").c_str(), 1920, SRInputQuality::Balanced);
+  Task* t = tc.create(assetPath("test_av.mp4").c_str(), 1920,
+                      SRInputQuality::Balanced, SRModel::Anime);
   EXPECT_TRUE(t != nullptr);
   tc.save(t);
 
@@ -264,7 +265,10 @@ TEST(TaskQualityPersists) {
   Task* loaded = nullptr;
   for (auto& tp : fresh.tasks()) if (tp->id == t->id) loaded = tp.get();
   EXPECT_TRUE(loaded != nullptr);
-  if (loaded) EXPECT_TRUE(loaded->srInput == SRInputQuality::Balanced);
+  if (loaded) {
+    EXPECT_TRUE(loaded->srInput == SRInputQuality::Balanced);
+    EXPECT_TRUE(loaded->model == SRModel::Anime);
+  }
 }
 
 // 带超分的任务应跑到完成（回归"卡在最后一帧"：确认引擎侧能到 ST_DONE）
@@ -289,6 +293,32 @@ TEST(TaskWithSRCompletes) {
   EXPECT_TRUE(out.open(t->temp.c_str()));
   EXPECT_EQ(out.vw, 1920);   // FullSource 720p → 1920 输出，不能被中间尺寸截断
   EXPECT_EQ(out.vh, 1080);
+  out.close();
+}
+
+// 动画模型任务：应使用 animevideov3 并正常完成
+TEST(TaskWithAnimeModelCompletes) {
+  std::string root = testcfg::dataDir() + "/tasks_anime";
+  std::error_code ec;
+  std::filesystem::remove_all(root, ec);
+
+  TaskCenter tc;
+  tc.init(root);
+  Task* t = tc.create(assetPath("test_av.mp4").c_str(), 1920,
+                      SRInputQuality::FullSource, SRModel::Anime);
+  EXPECT_TRUE(t != nullptr);
+  EXPECT_TRUE(t->model == SRModel::Anime);
+  tc.start(t);
+  int wait = 0;
+  while (t->status.load() == ST_RUNNING && wait < 1200) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    wait++;
+  }
+  EXPECT_TRUE(t->status.load() == ST_DONE);
+  EXPECT_TRUE(t->frames > 40);
+  MediaStream out;
+  EXPECT_TRUE(out.open(t->temp.c_str()));
+  EXPECT_EQ(out.vw, 1920);
   out.close();
 }
 

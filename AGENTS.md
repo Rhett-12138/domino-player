@@ -97,6 +97,7 @@ flutter run -d windows             # 开发运行（热重载）
 - **SR 自动降档**：`maybeAutoDegrade` 每 ~200ms 看 `currentMediaClock - pendingPts/playhead`；lag>0.30s 持续 1s 后，4K/2K→1080p，1080p→关闭，设置 `dropUntilPts` 追到当前时钟并冷却 4s。不要在 Ticker 停摆时触发；手动选档必须清 `srAutoDegraded_` 并重试。
 - **离线 SR 质量优先**：`encodeOffline` 默认 `SRInputQuality::FullSource`，输入宽 `max(target/4, min(srcW,1920))`，**不要**改回固定 `target/4`；4x 输出用 `SWS_LANCZOS` 缩到目标。编码默认 CRF18 + preset slow，但必须保持 `max_b_frames=0 + tune=zerolatency`（fMP4/断点续编 A/V 约束）。1080p→4K 中间帧 7680×4320、峰值约 1.9GB；SR 失败必须回退源帧并最终判任务失败，不能 `return` 丢帧。后续用 tile。
 - **任务质量档要持久化**：`Task::srInput` 写入 `meta.tsv` 第二行 `sr_input=0/1/2`；旧 meta 无字段按 Fast（旧 target/4）兼容；`TaskCenter::start` 必须把它传给 `EncodeOptions`，续编不能换策略。质量下拉：快速/平衡/高质量（默认 FullSource）。
+- **内容类型/模型也要持久化**：`Task::model`（`SRModel::Realistic/Anime`）写入 `meta.tsv` 第三行 `model=realistic|anime`；旧 meta 默认 Realistic。模型路径用 `srModelParamName/BinName`，不要硬编码；任务续编必须沿用。模型缺失应报失败，不静默换模型。
 - **SR 基准**：`domino_sr_bench`（不加入 ctest）测直接推理、Player 端到端和 Fast/Balanced/FullSource 离线编码；改动 SR/呈现后重跑，数据写入 `docs/plan-sr-playback-2026-10.md` / `plan-sr-worker-2026-10.md` / `plan-offline-sr-quality-2026-10.md`。
 - **续编分段不能乱删**：续编取消/失败时保留 `task.mp4.resume`，下次启动先合并再继续；替换主文件必须先备份、失败回滚，禁止静默忽略 `remove/rename` 错误。
   - `.resume.merging` = 合并中的续编段；`.resume.cont` = 续编段标记（主文件丢失时禁止当首段提升）；`.bak` = 主文件替换备份，启动时先恢复。

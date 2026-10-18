@@ -1,4 +1,5 @@
 #pragma once
+#include "config.h"
 #include "decode.h"
 #include "sr.h"
 #include <algorithm>
@@ -43,6 +44,7 @@ struct EncodeOptions {
   double startTime = 0;         // 从源视频该秒开始（断点续编）；0=从头
   long long startFrame = 0;     // 帧号偏移（续编时继续旧帧号）
   std::string modelBase;        // NCNN 模型目录（空=Config::defaults()）
+  SRModel model = SRModel::Realistic;  // 真人/实拍或动画模型
   SRInputQuality srInput = SRInputQuality::FullSource;  // 离线默认质量优先
   int crf = 18;                 // x264 CRF；0=用 bit_rate
   std::string preset = "slow";

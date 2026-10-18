@@ -13,6 +13,7 @@ struct Task {
   std::string id;
   std::string source;
   int targetW = 1920;
+  SRModel model = SRModel::Realistic;                    // 真人/实拍或动画
   SRInputQuality srInput = SRInputQuality::FullSource;   // 离线质量档（续编沿用）
   std::string temp;                  // 产物路径（<dir>/<id>/task.mp4）
   std::string folder;                // 任务文件夹（<dir>/<id>/）
@@ -39,7 +40,8 @@ public:
   void init(const std::string& root = "");  // 数据根目录（空=Config 默认 %APPDATA%/DominoPlayer）
   void save(Task* t);        // 写单个任务的 meta.tsv
   Task* create(const char* source, int targetW,
-               SRInputQuality quality = SRInputQuality::FullSource);
+               SRInputQuality quality = SRInputQuality::FullSource,
+               SRModel model = SRModel::Realistic);
   void start(Task* t);       // 启动编码线程（有检查点则断点续编）
   void stop(Task* t);        // 取消并等待线程结束，记录断点
   void remove(Task* t);      // 停止 + 递归删除任务文件夹

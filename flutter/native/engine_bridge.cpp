@@ -380,17 +380,25 @@ int domino_task_create(void* h, const char* source, int targetW, const char* des
   return domino_task_create_ex(h, source, targetW, 2, desc);
 }
 int domino_task_create_ex(void* h, const char* source, int targetW, int quality, const char* desc) {
+  return domino_task_create_ex2(h, source, targetW, quality, 0, desc);
+}
+int domino_task_create_ex2(void* h, const char* source, int targetW, int quality, int model, const char* desc) {
   EngineHandle* e = (EngineHandle*)h;
   if (!e || !e->tasks || !source) return -1;
   int q = quality < 0 ? 0 : (quality > 2 ? 2 : quality);
   SRInputQuality mode = q == 0 ? SRInputQuality::Fast
                     : q == 1 ? SRInputQuality::Balanced
                              : SRInputQuality::FullSource;
-  Task* t = e->tasks->create(source, targetW, mode);
+  SRModel sm = model == 1 ? SRModel::Anime : SRModel::Realistic;
+  Task* t = e->tasks->create(source, targetW, mode, sm);
   if (!t) return -1;
   if (desc) t->description = desc;
   e->tasks->save(t);
   return (int)e->tasks->tasks().size() - 1;
+}
+int domino_task_model(void* h, int idx) {
+  Task* t = TaskAt((EngineHandle*)h, idx);
+  return (t && t->model == SRModel::Anime) ? 1 : 0;
 }
 void domino_task_start(void* h, int idx) {
   EngineHandle* e = (EngineHandle*)h;

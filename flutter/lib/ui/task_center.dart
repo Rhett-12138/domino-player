@@ -25,6 +25,8 @@ class _TaskCenterScreenState extends State<TaskCenterScreen> {
   static const _targetW = [1280, 1920, 2560, 3840];
   static const _srQualities = ['快速', '平衡', '高质量'];
   static const _srQuality = [0, 1, 2];
+  static const _contents = ['真人/实拍', '动画'];
+  static const _content = [0, 1];
 
   int _count = 0;
   List<int> _lastStatus = const [];
@@ -34,6 +36,7 @@ class _TaskCenterScreenState extends State<TaskCenterScreen> {
   final _descCtrl = TextEditingController();
   int _targetIdx = 1;
   int _qualityIdx = 2;
+  int _contentIdx = 0;
   Timer? _timer;
 
   @override
@@ -86,7 +89,7 @@ class _TaskCenterScreenState extends State<TaskCenterScreen> {
   void _newTask() {
     final ok = widget.engine.taskCreate(
         _srcCtrl.text, _targetW[_targetIdx], _descCtrl.text,
-        quality: _srQuality[_qualityIdx]);
+        quality: _srQuality[_qualityIdx], content: _content[_contentIdx]);
     if (ok >= 0) {
       widget.engine.taskStart(ok);
       setState(() => _showNew = false);
@@ -228,6 +231,23 @@ class _TaskCenterScreenState extends State<TaskCenterScreen> {
                   ],
                 ),
                 const SizedBox(height: 8),
+                Row(
+                  children: [
+                    const Text('内容类型'),
+                    const SizedBox(width: 8),
+                    DropdownButton<int>(
+                      value: _contentIdx,
+                      items: List.generate(
+                          _contents.length,
+                          (i) => DropdownMenuItem(value: i, child: Text(_contents[i]))),
+                      onChanged: (v) => setState(() => _contentIdx = v ?? 0),
+                    ),
+                    const SizedBox(width: 8),
+                    const Text('动画使用 animevideov3 模型',
+                        style: TextStyle(fontSize: 11, color: Colors.white38)),
+                  ],
+                ),
+                const SizedBox(height: 8),
                 TextField(
                   controller: _descCtrl,
                   decoration: const InputDecoration(labelText: '备注（可选）'),
@@ -255,6 +275,7 @@ class _TaskCenterScreenState extends State<TaskCenterScreen> {
     final resume = e.taskResumeTime(i);
     final name = e.taskName(i);
     final temp = e.taskTemp(i);
+    final model = e.taskModel(i);
     final progress = total > 0 ? (frames / total).clamp(0.0, 1.0) : 0.0;
 
     return Card(
@@ -274,6 +295,9 @@ class _TaskCenterScreenState extends State<TaskCenterScreen> {
                     style: TextStyle(color: _statusColor(status))),
               ],
             ),
+            const SizedBox(height: 2),
+            Text(model == 1 ? '动画 · animevideov3 x4' : '真人 · General x4',
+                style: const TextStyle(fontSize: 11, color: Colors.white38)),
             const SizedBox(height: 8),
             LinearProgressIndicator(value: progress, minHeight: 8, borderRadius: BorderRadius.circular(4)),
             const SizedBox(height: 4),
