@@ -194,6 +194,8 @@ bool encodeOffline(const char* srcPath, const char* outPath, int targetW, const 
   swsOut.p = sws_getContext(encInW, encInH, AV_PIX_FMT_RGB24, outW, outH, AV_PIX_FMT_YUV420P,
                             SWS_LANCZOS, nullptr, nullptr, nullptr);
   if (!swsOut.p) { fprintf(stderr, "output sws init failed\n"); return false; }
+  int curSwsW = encInW;
+  int curSwsH = encInH;
   // SR 推理失败时回退源帧：用独立缩放器，绝不静默丢帧。
   SwsGuard swsFallback;
   if (needSR) {
@@ -301,16 +303,37 @@ bool encodeOffline(const char* srcPath, const char* outPath, int targetW, const 
         sh = (int)(srgb.size() / (size_t)sw / 3);
         sp = srgb.data();
       }
-      if (sw <= 0 || sw != encInW || sh != encInH) {
+      if (sw <= 0) {
         // 大图分配/推理失败：不能丢帧（否则 PTS 前移、任务假完成），回退源帧并最终判失败
-        logx::error("offline SR failed: sw=%d sh=%d expected=%dx%d; fallback source",
-                    sw, sh, encInW, encInH);
+        logx::error("offline SR failed: sw=%d expected=%dx%d; fallback source", sw, encInW, encInH);
         srFallbackCount++;
         sw = srcW;
         sh = srcH;
         sp = rgb.data();
         yuvSws = swsFallback.p;
         fallback = true;
+      } else if (sw != curSwsW || sh != curSwsH) {
+        // Real-CUGAN 等模型会裁掉边缘（输出比 scale*input 小），按实际尺寸重建缩放器
+        if (swsOut.p) sws_freeContext(swsOut.p);
+        swsOut.p = sws_getContext(sw, sh, AV_PIX_FMT_RGB24, outW, outH, AV_PIX_FMT_YUV420P,
+                                  SWS_LANCZOS, nullptr, nullptr, nullptr);
+        if (!swsOut.p) {
+          logx::error("dynamic output sws failed: %dx%d -> %dx%d", sw, sh, outW, outH);
+          srFallbackCount++;
+          sw = srcW;
+          sh = srcH;
+          sp = rgb.data();
+          yuvSws = swsFallback.p;
+          fallback = true;
+        } else {
+          if (opts.preview) {
+            if (swsPrev.p) sws_freeContext(swsPrev.p);
+            swsPrev.p = sws_getContext(sw, sh, AV_PIX_FMT_RGB24, outW, outH, AV_PIX_FMT_RGB24,
+                                       SWS_BILINEAR, nullptr, nullptr, nullptr);
+          }
+          curSwsW = sw;
+          curSwsH = sh;
+        }
       }
     }
     int sl[1] = { sw * 3 };

@@ -14,6 +14,21 @@
 | SwinIR 2x/3x | 2x/3x | 大 | 好 | 主要是 PyTorch/ONNX，无现成 NCNN | 转换成本高 |
 | 现有 4x Fast | 4x | 已有 | 好 | 可用 | 质量较低的快速兜底 |
 
+## Real-CUGAN 实测（真人样本）
+
+用本机 1080p 真人脸片段，目标 4K，输入 1920→2x→3840：
+
+- 模型：`models-pro/up2x-no-denoise`（避免降噪掩盖问题）、`up2x-conservative`
+- 结果：
+  - 单帧输出因 Real-CUGAN 边界裁剪是 **3768×2088**，不是精确 3840×2160（已用实际输出重建缩放器）；
+  - 速度：0.5s 片段 Full 约 **5.8s**（no-denoise）/ **5.6s**（conservative）；
+  - 对比：General 4x Full 约 9.6s，General 4x Fast 约 3.7s；
+- 画质：
+  - 皮肤、头发、牙齿明显**过度平滑/塑料感**；
+  - 真人纹理和细碎发丝被抹掉，眼睛/牙齿边缘变软；
+  - conservative 也仍有明显“动画修复”痕迹。
+- 结论：**不推荐把 Real-CUGAN 作为真人模型**；可以作为动画备选，但当前动画已有 animevideov3。
+
 ## SRMD 实测
 
 - 来源：`https://github.com/nihui/srmd-ncnn-vulkan/releases/tag/20220728`
@@ -55,6 +70,7 @@
 - 动画标准：x2/x3/x4 自动选择，已上线；
 - 真人标准：仍 4x（General x4）；
 - 真人高质量：x4plus，4x；
+- Real-CUGAN 2x 已验证但真人效果不合格（过度平滑）；
 - 代码已支持任意 `scale`，只差可用真人 2x/3x 模型文件。
 
 ## 验证标准
