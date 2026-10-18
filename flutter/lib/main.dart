@@ -5,6 +5,7 @@ import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
+import 'package:flutter/services.dart';
 
 import 'core/engine.dart';
 import 'core/format.dart';
@@ -44,6 +45,7 @@ class _HomeScreenState extends State<HomeScreen> {
   DominoEngine? _ownedEngine; // 仅自建时持有，负责释放
   EngineApi? _engine;
   bool _showTasks = false;
+  bool _playerFullscreen = false;
   final _playerKey = GlobalKey<PlayerScreenState>();
 
   @override
@@ -79,6 +81,7 @@ class _HomeScreenState extends State<HomeScreen> {
     if (showTasks == _showTasks) return;
     final player = _playerKey.currentState;
     if (showTasks) {
+      player?.exitFullscreen(); // 全屏是播放页的沉浸态，切任务中心前先退出
       player?.pauseForLeave(); // 离开播放页：暂停（避免隐藏后仍有声音）
     } else {
       player?.resumeForReturn(); // 回到播放页：若之前在播放则恢复
@@ -91,13 +94,21 @@ class _HomeScreenState extends State<HomeScreen> {
     return Scaffold(
       body: Column(
         children: [
-          _buildTopBar(),
+          if (!_playerFullscreen) _buildTopBar(),
           Expanded(
             // 常驻两个页面：切标签不卸载 PlayerScreen（否则会重开默认视频、丢进度、音频继续）
             child: IndexedStack(
               index: _showTasks ? 1 : 0,
               children: [
-                PlayerScreen(key: _playerKey, engine: _engine!),
+                PlayerScreen(
+                  key: _playerKey,
+                  engine: _engine!,
+                  onFullscreenChanged: (on) {
+                    if (mounted && _playerFullscreen != on) {
+                      setState(() => _playerFullscreen = on);
+                    }
+                  },
+                ),
                 TaskCenterScreen(
                   engine: _engine!,
                   onPlay: _playFromTasks,
@@ -135,8 +146,9 @@ class _HomeScreenState extends State<HomeScreen> {
 }
 
 class PlayerScreen extends StatefulWidget {
-  const PlayerScreen({super.key, required this.engine});
+  const PlayerScreen({super.key, required this.engine, this.onFullscreenChanged});
   final EngineApi engine;
+  final ValueChanged<bool>? onFullscreenChanged;
 
   @override
   State<PlayerScreen> createState() => PlayerScreenState();
@@ -151,6 +163,9 @@ class PlayerScreenState extends State<PlayerScreen> with SingleTickerProviderSta
   bool _hasVideo = false; // 是否已打开视频（决定显示视频还是占位提示）
   bool _showBeauty = false; // 是否呼出美颜/滤镜面板（浮层，不占布局）
   bool _fullscreen = false;
+  bool _fsControlsVisible = false;
+  Timer? _fsHideTimer;
+  final FocusNode _fsFocus = FocusNode();
 
   String _currentPath = ''; // 当前视频路径（不常显，仅作对话框初始目录与文件名）
   double _smooth = 0.0;
@@ -192,6 +207,9 @@ class PlayerScreenState extends State<PlayerScreen> with SingleTickerProviderSta
 
   @override
   void dispose() {
+    _fsHideTimer?.cancel();
+    _fsFocus.dispose();
+    if (_fullscreen) widget.engine.setFullscreen(false);
     _ticker.dispose();
     for (final im in _previewImgs) {
       im.dispose();
@@ -336,9 +354,54 @@ class PlayerScreenState extends State<PlayerScreen> with SingleTickerProviderSta
   }
 
   /// 全屏切换。
-  void _toggleFullscreen() {
-    final on = widget.engine.setFullscreen(!_fullscreen);
-    setState(() => _fullscreen = on);
+  void _toggleFullscreen() => _setFullscreen(!_fullscreen);
+
+  void _setFullscreen(bool on) {
+    if (_fullscreen == on) return;
+    _fsHideTimer?.cancel();
+    final actual = widget.engine.setFullscreen(on);
+    setState(() {
+      _fullscreen = actual;
+      _fsControlsVisible = actual;
+    });
+    widget.onFullscreenChanged?.call(actual);
+    if (actual) {
+      _scheduleFsHide();
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted && _fullscreen) _fsFocus.requestFocus();
+      });
+    } else {
+      _fsFocus.unfocus();
+    }
+  }
+
+  /// 供 HomeScreen 在切换任务中心/销毁前退出全屏。
+  void exitFullscreen() {
+    if (_fullscreen) _setFullscreen(false);
+  }
+
+  void _scheduleFsHide() {
+    _fsHideTimer?.cancel();
+    if (!_fullscreen || _showBeauty) return;
+    _fsHideTimer = Timer(const Duration(seconds: 3), () {
+      if (!mounted || !_fullscreen || _showBeauty) return;
+      setState(() => _fsControlsVisible = false);
+    });
+  }
+
+  void _showFsControls() {
+    if (!_fullscreen) return;
+    if (!_fsControlsVisible) setState(() => _fsControlsVisible = true);
+    _scheduleFsHide();
+  }
+
+  KeyEventResult _onFullscreenKey(FocusNode node, KeyEvent event) {
+    if (_fullscreen && event is KeyDownEvent &&
+        event.logicalKey == LogicalKeyboardKey.escape) {
+      _setFullscreen(false);
+      return KeyEventResult.handled;
+    }
+    return KeyEventResult.ignored;
   }
 
   void _open() {
@@ -391,75 +454,112 @@ class PlayerScreenState extends State<PlayerScreen> with SingleTickerProviderSta
   @override
   Widget build(BuildContext context) {
     final e = widget.engine;
-    final texId = e.textureId;
+    final video = _buildVideoArea(e);
+    if (!_fullscreen) {
+      return Scaffold(
+        backgroundColor: Colors.black,
+        body: Column(
+          children: [
+            Expanded(child: video),
+            _buildControlBar(e),
+          ],
+        ),
+      );
+    }
+
+    // 沉浸式全屏：只显示视频；鼠标移动时淡入控制条，3 秒后自动隐藏。
     return Scaffold(
       backgroundColor: Colors.black,
-      body: Column(
-        children: [
-          // 视频区
-          Expanded(
+      body: Focus(
+        focusNode: _fsFocus,
+        onKeyEvent: _onFullscreenKey,
+        child: MouseRegion(
+          cursor: _fsControlsVisible ? MouseCursor.defer : SystemMouseCursors.none,
+          onHover: (_) => _showFsControls(),
+          child: Listener(
+            behavior: HitTestBehavior.translucent,
+            onPointerDown: (_) => _showFsControls(),
             child: Stack(
+              fit: StackFit.expand,
               children: [
-                if (_hasVideo && texId > 0)
-                  Positioned.fill(
-                    child: Center(
-                      child: AspectRatio(
-                        aspectRatio: (_videoW > 0 && _videoH > 0)
-                            ? _videoW / _videoH
-                            : 16 / 9,
-                        child: Texture(textureId: texId, filterQuality: FilterQuality.medium),
-                      ),
-                    ),
-                  )
-                else if (!_opening)
-                  Center(
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Icon(Icons.movie_outlined, size: 64, color: Colors.white24),
-                        const SizedBox(height: 12),
-                        const Text('未打开视频', style: TextStyle(color: Colors.white54)),
-                        const SizedBox(height: 4),
-                        const Text('点击下方「打开」选择文件',
-                            style: TextStyle(color: Colors.white38, fontSize: 12)),
-                        const SizedBox(height: 12),
-                        FilledButton.icon(
-                          onPressed: _pickAndOpen,
-                          icon: const Icon(Icons.folder_open),
-                          label: const Text('打开文件'),
-                        ),
-                      ],
+                video,
+                Positioned(
+                  left: 0,
+                  right: 0,
+                  bottom: 0,
+                  child: AnimatedOpacity(
+                    opacity: _fsControlsVisible ? 1 : 0,
+                    duration: const Duration(milliseconds: 180),
+                    child: IgnorePointer(
+                      ignoring: !_fsControlsVisible,
+                      child: _buildControlBar(e),
                     ),
                   ),
-                if (_opening) const Center(child: CircularProgressIndicator()),
-                // FPS 显示（仅在播放视频时）
-                if (_hasVideo)
-                  Positioned(
-                    right: 12,
-                    bottom: 12,
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                      decoration: BoxDecoration(
-                        color: Colors.black54,
-                        borderRadius: BorderRadius.circular(6),
-                      ),
-                      child: Text('${_fps} FPS', style: const TextStyle(fontSize: 13, color: Colors.white70)),
-                    ),
-                  ),
-                // 呼出的美颜/滤镜浮层（不占布局空间）
-                if (_showBeauty)
-                  Positioned(
-                    left: 8,
-                    right: 8,
-                    bottom: 8,
-                    child: _buildBeautyPanel(e),
-                  ),
+                ),
               ],
             ),
           ),
-          _buildControlBar(e),
-        ],
+        ),
       ),
+    );
+  }
+
+  Widget _buildVideoArea(EngineApi e) {
+    final texId = e.textureId;
+    return Stack(
+      children: [
+        if (_hasVideo && texId > 0)
+          Positioned.fill(
+            child: Center(
+              child: AspectRatio(
+                aspectRatio: (_videoW > 0 && _videoH > 0) ? _videoW / _videoH : 16 / 9,
+                child: Texture(textureId: texId, filterQuality: FilterQuality.medium),
+              ),
+            ),
+          )
+        else if (!_opening)
+          Center(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(Icons.movie_outlined, size: 64, color: Colors.white24),
+                const SizedBox(height: 12),
+                const Text('未打开视频', style: TextStyle(color: Colors.white54)),
+                const SizedBox(height: 4),
+                const Text('点击下方「打开」选择文件',
+                    style: TextStyle(color: Colors.white38, fontSize: 12)),
+                const SizedBox(height: 12),
+                FilledButton.icon(
+                  onPressed: _pickAndOpen,
+                  icon: const Icon(Icons.folder_open),
+                  label: const Text('打开文件'),
+                ),
+              ],
+            ),
+          ),
+        if (_opening) const Center(child: CircularProgressIndicator()),
+        // FPS 移到右上角；全屏控制条隐藏时一并隐藏，保持沉浸感。
+        if (_hasVideo && (!_fullscreen || _fsControlsVisible))
+          Positioned(
+            top: 12,
+            right: 12,
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+              decoration: BoxDecoration(
+                color: Colors.black54,
+                borderRadius: BorderRadius.circular(6),
+              ),
+              child: Text('${_fps} FPS', style: const TextStyle(fontSize: 13, color: Colors.white70)),
+            ),
+          ),
+        if (_showBeauty)
+          Positioned(
+            left: 8,
+            right: 8,
+            bottom: 8,
+            child: _buildBeautyPanel(e),
+          ),
+      ],
     );
   }
 
@@ -500,7 +600,12 @@ class PlayerScreenState extends State<PlayerScreen> with SingleTickerProviderSta
                 color: _showBeauty ? Colors.lightBlueAccent : Colors.white54,
                 onPressed: () {
                   setState(() => _showBeauty = !_showBeauty);
-                  if (_showBeauty) _previewDirty = true; // 呼出时刷新缩略图
+                  if (_showBeauty) {
+                    _previewDirty = true; // 呼出时刷新缩略图
+                    _fsHideTimer?.cancel();
+                  } else {
+                    _scheduleFsHide();
+                  }
                 },
               ),
               IconButton(
@@ -572,7 +677,7 @@ class PlayerScreenState extends State<PlayerScreen> with SingleTickerProviderSta
               const Icon(Icons.volume_up, size: 18),
               const SizedBox(width: 4),
               SizedBox(
-                width: 64,
+                width: 96,
                 child: Slider(
                   value: _volume,
                   onChanged: (v) {
@@ -617,7 +722,10 @@ class PlayerScreenState extends State<PlayerScreen> with SingleTickerProviderSta
               IconButton(
                 tooltip: '关闭',
                 icon: const Icon(Icons.close, size: 18),
-                onPressed: () => setState(() => _showBeauty = false),
+                onPressed: () {
+                  setState(() => _showBeauty = false);
+                  _scheduleFsHide();
+                },
               ),
             ],
           ),

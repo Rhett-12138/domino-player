@@ -434,6 +434,40 @@ void main() {
     await _dispose(tester);
   });
 
+  testWidgets('全屏时隐藏顶部标签栏，退出后恢复', (WidgetTester tester) async {
+    final engine = FakeEngine();
+    await tester.pumpWidget(MaterialApp(home: HomeScreen(engine: engine)));
+    await tester.pump();
+    expect(find.text('任务中心'), findsOneWidget);
+
+    await tester.tap(find.byIcon(Icons.fullscreen));
+    await tester.pump();
+    expect(engine.fullscreenState, true);
+    expect(find.text('任务中心'), findsNothing);
+
+    await tester.tap(find.byIcon(Icons.fullscreen_exit));
+    await tester.pump();
+    expect(engine.fullscreenState, false);
+    expect(find.text('任务中心'), findsOneWidget);
+    await _dispose(tester);
+  });
+
+  testWidgets('全屏控制条 3 秒后自动隐藏', (WidgetTester tester) async {
+    final engine = FakeEngine();
+    await tester.pumpWidget(MaterialApp(home: PlayerScreen(engine: engine)));
+    await tester.pump();
+
+    await tester.tap(find.byIcon(Icons.fullscreen));
+    await tester.pump();
+    final shown = tester.widget<AnimatedOpacity>(find.byType(AnimatedOpacity));
+    expect(shown.opacity, 1);
+
+    await tester.pump(const Duration(seconds: 4));
+    final hidden = tester.widget<AnimatedOpacity>(find.byType(AnimatedOpacity));
+    expect(hidden.opacity, 0);
+    await _dispose(tester);
+  });
+
   testWidgets('播放页：全屏按钮切换引擎全屏', (WidgetTester tester) async {
     final engine = FakeEngine();
     await tester.pumpWidget(MaterialApp(home: PlayerScreen(engine: engine)));
