@@ -41,6 +41,7 @@ TEST(SRModelRegistry) {
   EXPECT_TRUE(selectSRModel(SRModel::Anime, 1280, 2560) == SRModel::AnimeX2);
   EXPECT_TRUE(selectSRModel(SRModel::Anime, 1280, 3840) == SRModel::AnimeX3);
   EXPECT_TRUE(selectSRModel(SRModel::AnimeHQ, 1280, 3840) == SRModel::AnimeHQ);
+  EXPECT_TRUE(selectSRModel(SRModel::Realistic, 1280, 3840) == SRModel::Realistic);
 }
 
 TEST(EncodeSRInputWidthQuality) {

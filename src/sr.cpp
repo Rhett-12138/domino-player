@@ -18,9 +18,12 @@ int SR::process(const uint8_t* rgb, int w, int h, int inW, std::vector<uint8_t>&
   ncnn::Mat in = ncnn::Mat::from_pixels_resize(rgb, ncnn::Mat::PIXEL_RGB, w, h, inW, inH);
   in.substract_mean_normalize(0, norm);
   ncnn::Extractor ex = net_.create_extractor();
-  ex.input("data", in);
+  // Real-ESRGAN 用 data，SRMD 用 input；从模型元数据取实际 blob 名，避免猜测。
+  const char* inName = net_.input_names().empty() ? "data" : net_.input_names().front();
+  const char* outName = net_.output_names().empty() ? "output" : net_.output_names().front();
+  if (ex.input(inName, in) != 0) return -1;
   ncnn::Mat out;
-  if (ex.extract("output", out) != 0) return -1;
+  if (ex.extract(outName, out) != 0) return -1;
   for (int q = 0; q < out.c; q++) {
     float* p = out.channel(q);
     for (int i = 0; i < out.w * out.h; i++) p[i] *= 255.f;

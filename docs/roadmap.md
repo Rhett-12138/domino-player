@@ -38,7 +38,7 @@
 1. [ ] **任务中心端到端人工验收**：建任务 → 编码 → 进度 → 断点续编 → 边播放（自动化难驱动 Flutter 控件，需人工过一遍）
 2. [ ] **2K/4K 实时 SR 优化**：1080p 已 29.6fps；2K≈15、4K≈5.9fps。自动降档已兜底（4K/2K→1080p，仍慢→关闭）；真正 2K/4K 30fps 仍需轻量模型/推理优化，零拷贝单项收益有限
 3. [ ] **高质量模型盲测/模型包**：验证 x4plus / x4plus-anime 在真人、动画、文字上的收益；若继续增加模型，做可选模型包/下载（见 `docs/plan-model-library-2026-10.md`）
-4. [ ] **真人 2x/3x 模型**：动画 x2/x3 已自动接入；真人缺可用 Real-ESRGAN x2/x3 NCNN 资产，后续评估 x2plus 转换/Real-CUGAN；1.5x 无原生模型，建议 2x+缩放
+4. [ ] **真人 2x/3x 模型**：动画 x2/x3 已接入；SRMD 2x/3x 与当前 NCNN 不兼容，Real-ESRGAN x2plus NCNN 尚未取得（见 `docs/plan-realistic-2x3-models-2026-10.md`）；1.5x 无原生模型，建议 2x+缩放
 5. [ ] **离线 SR 大图优化**：FullSource 1080p→4K 中间帧 7680×4320、峰值约 1.9GB；评估 tile + overlap
 6. [ ] 打包分发：安装包/绿色版、图标、关于页
 7. [ ] 移动端验证：Android/iOS 注入 `AudioSink` 实现（引擎已可移植）

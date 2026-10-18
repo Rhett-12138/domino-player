@@ -77,13 +77,17 @@ inline SRModel srModelFromId(const std::string& id) {
 // 按目标/源比例选标准模型：动画优先 2x/3x，真人目前只有 4x 标准模型。
 // HQ 档保持 4x（高质量模型没有 2x/3x 资产）。
 inline SRModel selectSRModel(SRModel preferred, int srcW, int targetW) {
-  if (srModelIsHQ(preferred) || !srModelIsAnime(preferred)) return preferred;
+  if (srModelIsHQ(preferred)) return preferred;
   if (srcW <= 0 || targetW <= srcW) return preferred;
   const int64_t tw = targetW;
   const int64_t sw = srcW;
-  if (tw <= sw * 2) return SRModel::AnimeX2;
-  if (tw <= sw * 3) return SRModel::AnimeX3;
-  return SRModel::Anime;
+  if (srModelIsAnime(preferred)) {
+    if (tw <= sw * 2) return SRModel::AnimeX2;
+    if (tw <= sw * 3) return SRModel::AnimeX3;
+    return SRModel::Anime;
+  }
+  // 真人暂只有 4x 标准/高质量模型（SRMD x2/x3 与当前 NCNN 不兼容，未启用）。
+  return preferred;
 }
 
 // 拼接目录与文件名：无论 base 末尾有无分隔符都得到合法路径。
