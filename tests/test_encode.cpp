@@ -29,8 +29,18 @@ TEST(SRModelRegistry) {
   EXPECT_STREQ(srModelParamName(SRModel::Anime), "realesr-animevideov3-x4.param");
   EXPECT_STREQ(srModelParamName(SRModel::RealisticHQ), "realesrgan-x4plus.param");
   EXPECT_STREQ(srModelParamName(SRModel::AnimeHQ), "realesrgan-x4plus-anime.param");
+  EXPECT_STREQ(srModelParamName(SRModel::AnimeX2), "realesr-animevideov3-x2.param");
+  EXPECT_STREQ(srModelParamName(SRModel::AnimeX3), "realesr-animevideov3-x3.param");
   EXPECT_TRUE(srModelFromId("realistic_hq") == SRModel::RealisticHQ);
   EXPECT_TRUE(srModelFromId("anime_hq") == SRModel::AnimeHQ);
+  EXPECT_TRUE(srModelFromId("anime_x2") == SRModel::AnimeX2);
+  EXPECT_TRUE(srModelFromId("anime_x3") == SRModel::AnimeX3);
+  EXPECT_EQ(srModelScale(SRModel::AnimeX2), 2);
+  EXPECT_EQ(srModelScale(SRModel::AnimeX3), 3);
+  EXPECT_TRUE(selectSRModel(SRModel::Anime, 1280, 1920) == SRModel::AnimeX2);
+  EXPECT_TRUE(selectSRModel(SRModel::Anime, 1280, 2560) == SRModel::AnimeX2);
+  EXPECT_TRUE(selectSRModel(SRModel::Anime, 1280, 3840) == SRModel::AnimeX3);
+  EXPECT_TRUE(selectSRModel(SRModel::AnimeHQ, 1280, 3840) == SRModel::AnimeHQ);
 }
 
 TEST(EncodeSRInputWidthQuality) {
@@ -43,6 +53,11 @@ TEST(EncodeSRInputWidthQuality) {
   EXPECT_EQ(chooseSRInputWidth(2560, 3840, SRInputQuality::FullSource), 1920);
   // 源太小、4x 也不够目标宽时，仍用 target/4 保证输出尺寸
   EXPECT_EQ(chooseSRInputWidth(320, 1920, SRInputQuality::FullSource), 480);
+  // 2x/3x：输入按 scale 反推，FullSource 仍优先源宽
+  EXPECT_EQ(chooseSRInputWidth(1280, 2560, SRInputQuality::Fast, 2), 1280);
+  EXPECT_EQ(chooseSRInputWidth(1280, 1920, SRInputQuality::FullSource, 2), 1280);
+  EXPECT_EQ(chooseSRInputWidth(1280, 3840, SRInputQuality::FullSource, 3), 1280);
+  EXPECT_EQ(chooseSRInputWidth(1920, 3840, SRInputQuality::FullSource, 2), 1920);
 }
 
 // 解码统计视频帧数（用于确认编码没有因 send EAGAIN 丢帧）

@@ -46,6 +46,8 @@ class _TaskCenterScreenState extends State<TaskCenterScreen> {
       case 1: return '动画 · animevideov3 x4';
       case 2: return '真人 · x4plus';
       case 3: return '动画 · x4plus-anime';
+      case 4: return '动画 · animevideov3 x2';
+      case 5: return '动画 · animevideov3 x3';
       default: return '真人 · General x4';
     }
   }

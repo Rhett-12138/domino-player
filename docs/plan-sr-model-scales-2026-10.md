@@ -1,7 +1,10 @@
 # 分析：2x / 3x / 1.5x SR 模型与灵活选择（2026-10）
 
+> 状态：**动画 2x/3x 已接入并自动选择**；真人 2x/3x 暂缺可用 NCNN 模型，仍走 4x。
+> 1.5x 没有主流原生模型，用 2x 输出缩放模拟。
+>
 > 结论：**2x 最值得先做；3x 对 720p→4K 有价值；1.5x 没有主流原生模型，建议用 2x 输出再缩放模拟。**
-> 当前只带了 4x 模型，且离线/Runtime 仍假设 4x；要真正提速需要通用 scale + 模型注册表。
+> 已把 encode 的 `*4` 改成通用 `scale`，动画按 `target/src` 自动选 x2/x3/x4。
 
 ## 当前假设
 
@@ -83,7 +86,26 @@ else:
 **建议顺序**：先 2x → 再 3x → 1.5x 用 2x 模拟。  
 2x 能覆盖 1080→4K、720→2K，是投入产出比最高的一步；3x 主要服务 720→4K。
 
-## 当前代码需要改的点
+## 已实现（动画）
+
+- 模型：`realesr-animevideov3-x2` / `x3` / `x4`；
+- `TaskCenter::create` 探测源宽，按 `target/src` 自动选：
+  - `<=2x` → x2
+  - `<=3x` → x3
+  - 否则 x4
+- `encodeOffline` 用 `srModelScale()` 替换硬编码 `*4`，输入 `ceil(target/scale)`；
+- 实测 720p 0.5s 源：
+  - 720→2K（x2，输入 1280）约 **1.9s**；
+  - 720→4K（x3，输入 1280）约 **2.7s**；
+  - 对应 4x FullSource 约 3.8s/3.8s（2x 提速约 2x，3x 约 1.4x）。
+- 真人标准仍用 x4；当前没有可用的 Real-ESRGAN x2/x3 NCNN 资产，后续可补 x2plus 转换或 Real-CUGAN。
+
+## 当前代码改动状态
+
+**已完成**：动画 x2/x3 模型资产、`srModelScale`、`chooseSRInputWidth(scale)`、encode 通用 scale、TaskCenter 按源宽自动选择、meta 持久化、任务卡片标签。
+**待做**：真人 2x/3x 模型资产与选择；Player 实时路径仍按 4x（本次只做离线）；1.5x 用 2x+缩放。
+
+## 早期设计要点（已部分落地）
 
 1. `SR` 增加 `scale()` / `init(param, bin, scale)`，模型注册表按文件名映射；
 2. `encodeOffline` 用 `scale` 替换 `*4`，`inW = chooseInputWidth(..., scale)`；

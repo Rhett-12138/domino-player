@@ -189,7 +189,14 @@ Task* TaskCenter::create(const char* source, int targetW, SRInputQuality quality
   tp->source = source;
   tp->targetW = targetW;
   tp->srInput = quality;
-  tp->model = model;
+  // 按源宽自动选动画 2x/3x；真人标准/高质量仍走现有 4x 模型。
+  int srcW = 0;
+  MediaStream probe;
+  if (probe.open(source)) {
+    srcW = probe.vw;
+    probe.close();
+  }
+  tp->model = selectSRModel(model, srcW, targetW);
   tp->folder = dir_ + "/" + tp->id;
   tp->temp = tp->folder + "/task.mp4";
   tp->createdAt = (long long)time(nullptr);

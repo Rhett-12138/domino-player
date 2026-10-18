@@ -33,8 +33,8 @@ enum class SRInputQuality {
   FullSource,   // max(target/4, min(srcW,1920))，尽量保留源宽并限制中间帧
 };
 
-// 选择 4x 模型的输入宽；保证 4*inW >= targetW（源极小时除外）。
-int chooseSRInputWidth(int srcW, int targetW, SRInputQuality q);
+// 选择模型的输入宽；保证 scale*inW >= targetW（源极小时除外）。
+int chooseSRInputWidth(int srcW, int targetW, SRInputQuality q, int scale = 4);
 
 struct EncodeOptions {
   bool verbose = true;

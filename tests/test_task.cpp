@@ -307,7 +307,8 @@ TEST(TaskWithAnimeModelCompletes) {
   Task* t = tc.create(assetPath("test_av.mp4").c_str(), 1920,
                       SRInputQuality::FullSource, SRModel::Anime);
   EXPECT_TRUE(t != nullptr);
-  EXPECT_TRUE(t->model == SRModel::Anime);
+  // 1280→1920 比例为 1.5，自动选择动画 2x 模型
+  EXPECT_TRUE(t->model == SRModel::AnimeX2);
   tc.start(t);
   int wait = 0;
   while (t->status.load() == ST_RUNNING && wait < 1200) {

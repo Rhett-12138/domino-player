@@ -3,7 +3,7 @@
 本目录包含离线超分使用的 NCNN 模型：
 
 - `RealESRGAN_General_x4_v3.*`
-- `realesr-animevideov3-x4.*`
+- `realesr-animevideov3-x2.*` / `x3.*` / `x4.*`（动画标准，按目标比例自动选）
 - `realesrgan-x4plus.*`（高质量真人/通用）
 - `realesrgan-x4plus-anime.*`（高质量动画）
 

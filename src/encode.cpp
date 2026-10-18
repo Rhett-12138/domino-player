@@ -18,8 +18,9 @@ extern "C" {
 #include <libavutil/imgutils.h>
 }
 
-int chooseSRInputWidth(int srcW, int targetW, SRInputQuality q) {
-  const int fast = targetW / 4;
+int chooseSRInputWidth(int srcW, int targetW, SRInputQuality q, int scale) {
+  if (scale <= 0) scale = 4;
+  const int fast = (targetW + scale - 1) / scale;
   if (targetW <= 0 || srcW <= 0) return 0;
   // 限制中间帧峰值：1080p→4K FullSource 实测 ~1.9GB；2K 源不再放大到 10240。
   const int cap = 1920;
@@ -28,7 +29,7 @@ int chooseSRInputWidth(int srcW, int targetW, SRInputQuality q) {
       return fast;
     case SRInputQuality::Balanced:
       // 真正的中间档：默认 3/4 源宽，避免 1080p→4K 直接等同 FullSource。
-      return (std::max)(fast, (std::min)(cap, (std::min)(srcW, (std::max)(srcW * 3 / 4, targetW / 4))));
+      return (std::max)(fast, (std::min)(cap, (std::min)(srcW, (std::max)(srcW * 3 / 4, fast))));
     case SRInputQuality::FullSource:
     default:
       return (std::max)(fast, (std::min)(srcW, cap));
@@ -93,14 +94,15 @@ bool encodeOffline(const char* srcPath, const char* outPath, int targetW, const 
   }
   int outW = needSR ? targetW : srcW;
   int outH = needSR ? (int)(((size_t)srcH * targetW / srcW) & ~1) : srcH;
-  int inW = needSR ? chooseSRInputWidth(srcW, targetW, opts.srInput) : srcW;
+  const int srScale = srModelScale(opts.model);
+  int inW = needSR ? chooseSRInputWidth(srcW, targetW, opts.srInput, srScale) : srcW;
   // 高质量模型（x4plus / x4plus-anime）显存/中间特征更大：实测 1280 输入
   // 会失败，960（4x=3840）稳定；限制上限，避免整任务回退源帧。
   if (needSR && srModelIsHQ(opts.model) && inW > 960) inW = 960;
   if (inW > 1) inW &= ~1;   // 模型输入宽保持偶数
   const int inH = needSR ? (int)(((int64_t)srcH * inW / srcW) & ~1) : srcH;
-  const int encInW = needSR ? inW * 4 : srcW;
-  const int encInH = needSR ? inH * 4 : srcH;
+  const int encInW = needSR ? inW * srScale : srcW;
+  const int encInH = needSR ? inH * srScale : srcH;
 
   // ---- 输出：fMP4（边写边可播放）+ h264 + 音频流复制 ----
   OutFmtGuard ofmt;
