@@ -21,6 +21,8 @@ void Player::shutdown() {
   currentPath_.clear();
   resetClockAnchors();
   sr_.clear();   // 全局 GPU 实例由前端在停止所有任务后统一销毁
+  srInited_ = false;
+  srFailed_ = false;
 }
 
 void Player::audioFeedStatic(Player* self) { self->audioFeed(); }
@@ -83,11 +85,15 @@ void Player::audioFeed() {
 }
 
 void Player::ensureSR() {
-  if (srInited_ || noSR_) return;
-  if (sr_.init(cfg_.srParam().c_str(), cfg_.srBin().c_str()))
+  if (noSR_ || srFailed_) return;
+  if (srInited_ && !sr_.ready()) srInited_ = false;
+  if (srInited_) return;
+  if (sr_.init(cfg_.srParam().c_str(), cfg_.srBin().c_str())) {
     srInited_ = true;
-  else
+  } else {
+    srFailed_ = true;
     fprintf(stderr, "sr init failed\n");
+  }
 }
 
 bool Player::open(const std::string& path) {
@@ -98,6 +104,7 @@ bool Player::open(const std::string& path) {
   resetClockAnchors();
   if (!vid_.open(path.c_str())) return false;
   currentPath_ = path;
+  srFailed_ = false;
   ensureSR();
   duration_ = vid_.duration;
   fps_ = vid_.fps;
@@ -221,34 +228,41 @@ void Player::stopAudio() {
   hasAudio_ = false;
 }
 
-void Player::prefetch() {
+void Player::prefetch(bool decodeOnly) {
   if (havePending_ || pendingEOF_) return;
   double pts = 0;
   int r = vid_.nextVideoFrame(rgbBuf_.data(), &pts);
   if (r < 0) { pendingEOF_ = true; return; }
   pendingPts_ = pts;
-  bool ready = false;
-  if (noSR_) {
-    // 关闭超分：直接用源帧
+  if (decodeOnly) return;   // 追帧丢弃：只解码，不跑 SR
+  if (!noSR_ && !srInited_ && !srFailed_) ensureSR();
+  bool useSR = !noSR_ && srInited_;
+
+  auto useSource = [&] {
     srgb_.assign(rgbBuf_.data(), rgbBuf_.data() + (size_t)vid_.vw * vid_.vh * 3);
-    srOutW_ = vid_.vw; srOutH_ = vid_.vh;
-    ready = true;
-  } else if (inW_ > 0) {
-    // 手动 --in：固定 SR 输入宽（兼容旧用法）
-    int sw = sr_.process(rgbBuf_.data(), vid_.vw, vid_.vh, inW_, srgb_);
-    if (sw > 0) { srOutW_ = sw; srOutH_ = (int)(srgb_.size() / sw / 3); ready = true; }
-  } else if (vid_.vw >= srTargetW_) {
-    // 源宽已 ≥ 目标挡位：无需超分，直接用源帧
-    srgb_.assign(rgbBuf_.data(), rgbBuf_.data() + (size_t)vid_.vw * vid_.vh * 3);
-    srOutW_ = vid_.vw; srOutH_ = vid_.vh;
-    ready = true;
-  } else {
-    // 挡位模式：SR 输入 = 挡位/4，模型 4x 输出 = 挡位
-    int inW = srTargetW_ / 4;
-    int sw = sr_.process(rgbBuf_.data(), vid_.vw, vid_.vh, inW, srgb_);
-    if (sw > 0) { srOutW_ = sw; srOutH_ = (int)(srgb_.size() / sw / 3); ready = true; }
+    srOutW_ = vid_.vw;
+    srOutH_ = vid_.vh;
+    havePending_ = true;
+  };
+
+  // 关闭超分、SR 初始化失败、或源宽已 ≥ 目标挡位：直接用源帧
+  if (!useSR || (inW_ <= 0 && vid_.vw >= srTargetW_)) {
+    useSource();
+    return;
   }
-  if (ready) havePending_ = true;
+
+  // 挡位模式：SR 输入 = 挡位/4，模型 4x 输出 = 挡位；--in 为旧用法固定输入宽
+  int inW = inW_ > 0 ? inW_ : srTargetW_ / 4;
+  int sw = sr_.process(rgbBuf_.data(), vid_.vw, vid_.vh, inW, srgb_);
+  if (sw > 0) {
+    srOutW_ = sw;
+    srOutH_ = (int)(srgb_.size() / sw / 3);
+    havePending_ = true;
+  } else {
+    // 推理失败：本次及后续回退源帧，避免每帧重复失败
+    srFailed_ = true;
+    useSource();
+  }
 }
 
 void Player::resetClockAnchors() {
@@ -258,6 +272,9 @@ void Player::resetClockAnchors() {
   audioMediaBase_ = 0;
   lastAudioClock_ = 0;
   lastAudioClockWall_ = 0;
+  lastPumpWall_ = 0;
+  catchingUp_ = false;
+  catchupDeadline_ = 0;
   audioClockValid_ = false;
 }
 
@@ -323,13 +340,29 @@ void Player::pump() {
   if (!hasVideo()) return;
   processSeek();
   if (paused_.load()) return;
-  prefetch();
-  // UI/Ticker 停摆后媒体时钟可能已远超前；丢弃积压帧，只呈现最新帧，避免按 tick 频率快进
-  for (int drops = 0; havePending_ && drops < 300; drops++) {
-    if (currentMediaClock() - pendingPts_ <= 0.10) break;
-    havePending_ = false;
-    prefetch();
+
+  const double now = nowWall();
+  if (lastPumpWall_ > 0 && now - lastPumpWall_ > 0.5) {
+    catchingUp_ = true;
+    catchupDeadline_ = now + 2.0;   // 最多追赶 2s，避免弱机永久丢帧
   }
+  lastPumpWall_ = now;
+
+  // 仅 Ticker 真正停摆后才追帧；SR/解码持续慢于实时不能丢帧，
+  // 否则会永远追不上、几乎不呈现（4K SR 评估时暴露）。
+  // 每个 pump 追帧最多 100ms，且只解码不跑 SR；避免一次 pump 卡数十秒。
+  if (catchingUp_) {
+    havePending_ = false;
+    const double catchupStart = nowWall();
+    while (!pendingEOF_ && nowWall() - catchupStart < 0.10) {
+      if (currentMediaClock() - pendingPts_ <= 0.10) break;
+      prefetch(true);
+    }
+    if (pendingEOF_ || nowWall() >= catchupDeadline_ ||
+        currentMediaClock() - pendingPts_ <= 0.10)
+      catchingUp_ = false;
+  }
+  prefetch();
   if (readyToPresent()) {
     if (presentFrame()) startAudio();   // 第一帧呈现时启动音频
   }

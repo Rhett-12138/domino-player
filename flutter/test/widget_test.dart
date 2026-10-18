@@ -46,9 +46,25 @@ class FakeEngine implements EngineApi {
   }
 
   bool hasVideoState = false;
+  bool srActiveState = false;
+  bool srFailedState = false;
+  int srTargetState = 0;
 
   @override
   bool get hasVideo => hasVideoState;
+
+  @override
+  void setSR(bool enabled, int targetW) {
+    srActiveState = enabled;
+    srFailedState = false;
+    srTargetState = enabled ? targetW : 0;
+  }
+
+  @override
+  bool get srActive => srActiveState;
+
+  @override
+  bool get srFailed => srFailedState;
 
   @override
   void play() {
@@ -438,6 +454,34 @@ void main() {
     await tester.tap(find.byTooltip('打开文件'));
     await tester.pump();
     expect(engine.openCalls, 0); // 没有打开
+    await _dispose(tester);
+  });
+
+  testWidgets('播放页：窄窗口控制条不溢出', (WidgetTester tester) async {
+    await tester.binding.setSurfaceSize(const Size(640, 480));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    final engine = FakeEngine();
+    await tester.pumpWidget(MaterialApp(home: PlayerScreen(engine: engine)));
+    await tester.pump();
+    expect(tester.takeException(), isNull);
+    await _dispose(tester);
+  });
+
+  testWidgets('播放页：SR 下拉切换目标并驱动引擎', (WidgetTester tester) async {
+    final engine = FakeEngine();
+    await tester.pumpWidget(MaterialApp(home: PlayerScreen(engine: engine)));
+    await tester.pump();
+    expect(find.text('SR 关'), findsOneWidget);
+
+    await tester.tap(find.text('SR 关'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+    await tester.tap(find.text('超分：1080p'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+    expect(engine.srActiveState, true);
+    expect(engine.srTargetState, 1920);
+    expect(find.text('SR 1080p'), findsOneWidget);
     await _dispose(tester);
   });
 

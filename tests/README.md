@@ -20,6 +20,16 @@ GPU 着色器美颜（`flutter/native/gpu_frame_output.cpp`）依赖真实 D3D11
 headless 单测覆盖不到；需按 `docs/plan-gpu-beauty-2026-10.md` 做实机冒烟：播放 1080p/4K、
 黑白滤镜、磨皮/美白，并验证 `DOMINO_CPU_BEAUTY=1` 回退。
 
+## SR 基准（手动）
+
+```bash
+cmake --build build --target domino_sr_bench --config Release
+./build/Release/domino_sr_bench.exe ./tests/assets
+```
+
+输出：720p 源 → 1080p/2K/4K 的直接 `SR::process` ms/帧、理论 FPS，以及 Player 端到端 FPS。
+不加入 ctest（依赖 GPU/模型，耗时长）；结果记录在 `docs/plan-sr-playback-2026-10.md`。
+
 Flutter 测试（`cd flutter && flutter test`，纯 Dart，无需 DLL）：
 - `format_test`：时间格式化、任务状态名、滤镜列表（纯函数）
 - `widget_test`：任务中心新建/边播放、播放页控制条，用 `FakeEngine` 桩驱动（EngineApi 接口注入）

@@ -23,6 +23,11 @@ abstract class EngineApi {
   int get frameW;
   int get frameH;
 
+  /// 实时超分开关与目标宽；失败时引擎回退源帧。
+  void setSR(bool enabled, int targetW);
+  bool get srActive;
+  bool get srFailed;
+
   /// 全屏切换；返回当前是否全屏。
   bool setFullscreen(bool on);
 
@@ -104,6 +109,11 @@ class DominoEngine implements EngineApi {
   void setVolume(double v) => _volume(_h, v);
   double get position => _position(_h);
   double get duration => _duration(_h);
+
+  // ---- 实时超分 ----
+  void setSR(bool enabled, int targetW) => _setSR(_h, enabled ? 1 : 0, targetW);
+  bool get srActive => _srActive(_h) == 1;
+  bool get srFailed => _srFailed(_h) == 1;
 
   // ---- 美颜/滤镜 ----
   void setBeauty(double smooth, double white) => _beauty(_h, smooth, white);
@@ -219,6 +229,13 @@ class DominoEngine implements EngineApi {
       .lookupFunction<Double Function(Pointer<Void>), double Function(Pointer<Void>)>('domino_position');
   static final double Function(Pointer<Void>) _duration = _lib
       .lookupFunction<Double Function(Pointer<Void>), double Function(Pointer<Void>)>('domino_duration');
+  static final void Function(Pointer<Void>, int, int) _setSR = _lib
+      .lookupFunction<Void Function(Pointer<Void>, Int32, Int32),
+          void Function(Pointer<Void>, int, int)>('domino_set_sr');
+  static final int Function(Pointer<Void>) _srActive = _lib
+      .lookupFunction<Int32 Function(Pointer<Void>), int Function(Pointer<Void>)>('domino_sr_active');
+  static final int Function(Pointer<Void>) _srFailed = _lib
+      .lookupFunction<Int32 Function(Pointer<Void>), int Function(Pointer<Void>)>('domino_sr_failed');
   static final void Function(Pointer<Void>, double, double) _beauty = _lib
       .lookupFunction<Void Function(Pointer<Void>, Float, Float),
           void Function(Pointer<Void>, double, double)>('domino_beauty');

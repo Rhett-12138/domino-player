@@ -218,6 +218,26 @@ void domino_volume(void* h, double v) { if (h) ((EngineHandle*)h)->player->setVo
 double domino_position(void* h) { return h ? ((EngineHandle*)h)->player->position() : 0; }
 double domino_duration(void* h) { return h ? ((EngineHandle*)h)->player->duration() : 0; }
 
+void domino_set_sr(void* h, int enabled, int targetW) {
+  EngineHandle* e = (EngineHandle*)h;
+  if (!e || !e->player) return;
+  if (enabled == 0) {
+    e->player->setNoSR(true);
+    return;
+  }
+  if (targetW < 256) targetW = 256;
+  e->player->setSRTarget(0, targetW);
+  e->player->setNoSR(false);
+}
+int domino_sr_active(void* h) {
+  EngineHandle* e = (EngineHandle*)h;
+  return (e && e->player && !e->player->noSR()) ? 1 : 0;
+}
+int domino_sr_failed(void* h) {
+  EngineHandle* e = (EngineHandle*)h;
+  return (e && e->player && e->player->srFailed()) ? 1 : 0;
+}
+
 void domino_beauty(void* h, float smooth, float white) {
   EngineHandle* e = (EngineHandle*)h;
   if (!e) return;

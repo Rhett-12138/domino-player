@@ -34,6 +34,12 @@ DOMINO_EXPORT void   domino_volume(void* h, double v);
 DOMINO_EXPORT double domino_position(void* h);
 DOMINO_EXPORT double domino_duration(void* h);
 
+// 实时超分：enabled=0 关闭；enabled=1 时 targetW 为目标宽（如 1920/2560/3840）
+DOMINO_EXPORT void   domino_set_sr(void* h, int enabled, int targetW);
+// SR 当前是否启用 / 是否初始化失败（失败时播放回退源帧）
+DOMINO_EXPORT int    domino_sr_active(void* h);
+DOMINO_EXPORT int    domino_sr_failed(void* h);
+
 // 美颜/滤镜
 DOMINO_EXPORT void   domino_beauty(void* h, float smooth, float white);
 DOMINO_EXPORT void   domino_filter(void* h, int idx, float amt);

@@ -164,6 +164,28 @@ TEST(PlayerAudioClockDrivesVideo) {
   p.close();
 }
 
+// SR 初始化失败：应置失败标志并回退源帧持续播放，不能每帧重试/黑屏
+TEST(PlayerSRFailsFallsBackToSource) {
+  EngineFrameOutput out;
+  Player p(out);
+  p.setAudioSink(std::make_unique<DummyAudioSink>());
+  Config cfg = Config::defaults();
+  cfg.modelBase = testcfg::dataDir() + "/no_such_model";
+  p.setConfig(cfg);
+  p.setSRTarget(0, 1920);
+  p.setNoSR(false);
+  EXPECT_TRUE(p.open(assetPath("test_av.mp4").c_str()));
+  EXPECT_TRUE(p.srFailed());
+  EXPECT_FALSE(p.srReady());
+  for (int i = 0; i < 120; i++) { p.pump(); sleepMs(5); }
+  EXPECT_TRUE(p.frameIdx() > 10);
+  {
+    std::lock_guard<std::mutex> lk(out.lock());
+    EXPECT_EQ(out.width(), 1280);   // 回退源帧，不显示 1080p
+  }
+  p.close();
+}
+
 // Ticker 停摆后恢复：应丢弃积压帧直接追到当前媒体时间，而不是按 tick 频率快进
 TEST(PlayerDropsLateFramesAfterStall) {
   EngineFrameOutput out;

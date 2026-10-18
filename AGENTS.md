@@ -91,6 +91,8 @@ flutter run -d windows             # 开发运行（热重载）
 - **GPU 美颜用共享纹理**：`GpuFrameOutput` 在 `DominoRegisterPlugin` 里先建 D3D11 设备；Flutter 用 `kFlutterDesktopGpuSurfaceTypeDxgiSharedHandle` + `IDXGIResource::GetSharedHandle()`。输出纹理必须是 BGRA、`D3D11_RESOURCE_MISC_SHARED`，并等 GPU 完成（query）后再 MarkExternalTexture。
 - **D3D11 纹理描述必须初始化 `Format`**：`D3D11_TEXTURE2D_DESC` 默认 `DXGI_FORMAT_UNKNOWN`（0），漏设会返回 `E_INVALIDARG (0x80070057)`；`d3d11.h` + Windows 头下还有 `small` 等宏，成员名避开（用 `smallRgb`），并给桥加 `NOMINMAX`。
 - **GPU surface 生命周期**：共享纹理用 3 缓冲 + `release_callback` 引用计数；`acquireDescriptor` 里 AddRef，release 时释放；Flutter 未释放全部纹理时丢帧，不能覆盖。失败/无 D3D11 时自动回退 CPU（可用 `DOMINO_CPU_BEAUTY=1` 强制）。
+- **实时 SR 当前同步在 UI 线程**：`Player::prefetch` 直接跑 NCNN；1080p 实测 App 21fps、2K 12fps、4K 5.5fps。慢解码时**不能**用“丢积压帧”追赶，否则会永不呈现；只有 Ticker 停摆 >0.5s 才丢帧。SR 初始化失败要置 `srFailed_` 并回退源帧，不能每帧重试。
+- **SR 基准**：`domino_sr_bench`（不加入 ctest）测直接推理与 Player 端到端；改动 SR/呈现后重跑，数据写入 `docs/plan-sr-playback-2026-10.md`。
 - **续编分段不能乱删**：续编取消/失败时保留 `task.mp4.resume`，下次启动先合并再继续；替换主文件必须先备份、失败回滚，禁止静默忽略 `remove/rename` 错误。
   - `.resume.merging` = 合并中的续编段；`.resume.cont` = 续编段标记（主文件丢失时禁止当首段提升）；`.bak` = 主文件替换备份，启动时先恢复。
   - 合并幂等按“分段**末**帧是否已被主文件覆盖”判断；不要用首帧（检查点可能落后约 1s，首帧早于主文件末尾是合法重叠）。

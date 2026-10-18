@@ -171,6 +171,10 @@ class PlayerScreenState extends State<PlayerScreen> with SingleTickerProviderSta
   // FPS 显示（引擎侧真实呈现帧率）
   double _fps = 0;
 
+  // 实时超分：0=关闭，其他为目标宽
+  int _srTargetW = 0;
+  bool _srFailed = false;
+
   // 滤镜缩略图（按需生成：打开/美颜变化时，避免播放中闪动）
   List<ui.Image> _previewImgs = [];
   bool _previewDirty = true;
@@ -277,6 +281,10 @@ class PlayerScreenState extends State<PlayerScreen> with SingleTickerProviderSta
     if (fps != _fps) {
       setState(() => _fps = fps);
     }
+    final srFailed = _srTargetW > 0 && e.srFailed;
+    if (srFailed != _srFailed) {
+      setState(() => _srFailed = srFailed);
+    }
     // 滤镜缩略图：按需生成（打开后首帧 / 美颜变化）；成功后才清 dirty（失败保留以便重试）
     if (_previewDirty && vw > 0 && !_previewBusy) {
       _refreshPreviews();
@@ -328,8 +336,12 @@ class PlayerScreenState extends State<PlayerScreen> with SingleTickerProviderSta
       _pickAndOpen();
       return;
     }
-    setState(() => _opening = true);
+    setState(() {
+      _opening = true;
+      _srFailed = false;
+    });
     e.close();
+    e.setSR(_srTargetW > 0, _srTargetW);
     final ok = e.open(_currentPath);
     setState(() {
       _opening = false;
@@ -356,6 +368,13 @@ class PlayerScreenState extends State<PlayerScreen> with SingleTickerProviderSta
   }
 
   String _fmt(double s) => formatTime(s);
+
+  String get _srLabel {
+    if (_srTargetW <= 0) return 'SR 关';
+    if (_srTargetW >= 3840) return 'SR 4K';
+    if (_srTargetW >= 2560) return 'SR 2K';
+    return 'SR 1080p';
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -439,8 +458,13 @@ class PlayerScreenState extends State<PlayerScreen> with SingleTickerProviderSta
       color: const Color(0xFF1B1D25),
       child: Column(
         children: [
-          Row(
-            children: [
+          LayoutBuilder(builder: (context, constraints) {
+            return SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
+              child: SizedBox(
+                width: constraints.maxWidth < 760 ? 760.0 : constraints.maxWidth,
+                child: Row(
+                  children: [
               IconButton(
                 tooltip: _paused ? '播放' : '暂停',
                 icon: Icon(_paused ? Icons.play_arrow : Icons.pause),
@@ -473,10 +497,39 @@ class PlayerScreenState extends State<PlayerScreen> with SingleTickerProviderSta
                 color: _fullscreen ? Colors.lightBlueAccent : Colors.white54,
                 onPressed: _toggleFullscreen,
               ),
+              PopupMenuButton<int>(
+                tooltip: '实时超分',
+                initialValue: _srTargetW,
+                onSelected: (v) {
+                  setState(() {
+                    _srTargetW = v;
+                    _srFailed = false;
+                  });
+                  e.setSR(v > 0, v);
+                },
+                itemBuilder: (ctx) => const [
+                  PopupMenuItem(value: 0, child: Text('超分：关闭')),
+                  PopupMenuItem(value: 1920, child: Text('超分：1080p')),
+                  PopupMenuItem(value: 2560, child: Text('超分：2K')),
+                  PopupMenuItem(value: 3840, child: Text('超分：4K')),
+                ],
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 6),
+                  child: Text(
+                    _srFailed ? 'SR 失败' : _srLabel,
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: _srFailed
+                          ? Colors.redAccent
+                          : (_srTargetW > 0 ? Colors.lightBlueAccent : Colors.white54),
+                    ),
+                  ),
+                ),
+              ),
               const SizedBox(width: 8),
               if (_currentPath.isNotEmpty)
                 ConstrainedBox(
-                  constraints: const BoxConstraints(maxWidth: 200),
+                  constraints: const BoxConstraints(maxWidth: 120),
                   child: Text(
                     baseName(_currentPath),
                     overflow: TextOverflow.ellipsis,
@@ -499,7 +552,7 @@ class PlayerScreenState extends State<PlayerScreen> with SingleTickerProviderSta
               const Icon(Icons.volume_up, size: 18),
               const SizedBox(width: 4),
               SizedBox(
-                width: 100,
+                width: 64,
                 child: Slider(
                   value: _volume,
                   onChanged: (v) {
@@ -514,8 +567,11 @@ class PlayerScreenState extends State<PlayerScreen> with SingleTickerProviderSta
                 icon: const Icon(Icons.folder_open),
                 onPressed: _pickAndOpen,
               ),
-            ],
-          ),
+                  ],
+                ),
+              ),
+            );
+          }),
         ],
       ),
     );

@@ -75,6 +75,32 @@ add_custom_command(TARGET domino_tests POST_BUILD
     $<TARGET_FILE_DIR:domino_tests>
 )
 
+# ---- SR 播放基准（手动运行，不加入 ctest） ----
+add_executable(domino_sr_bench
+  tests/sr_bench.cpp
+  src/player.cpp
+  src/audio.cpp
+)
+target_include_directories(domino_sr_bench PRIVATE
+  src
+  ${FFMPEG_ROOT}/include
+  ${NCNN_ROOT}/x64/include
+)
+target_link_libraries(domino_sr_bench PRIVATE domino_core ole32.lib uuid.lib)
+target_compile_definitions(domino_sr_bench PRIVATE NCNN_VULKAN)
+target_compile_definitions(domino_sr_bench PRIVATE
+  "DOMINO_DEFAULT_MODEL_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/assets/models/sr/ncnn/\"")
+add_custom_command(TARGET domino_sr_bench POST_BUILD
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+    ${FFMPEG_ROOT}/bin/avcodec-63.dll
+    ${FFMPEG_ROOT}/bin/avformat-63.dll
+    ${FFMPEG_ROOT}/bin/avutil-61.dll
+    ${FFMPEG_ROOT}/bin/swscale-10.dll
+    ${FFMPEG_ROOT}/bin/swresample-7.dll
+    ${NCNN_ROOT}/x64/bin/ncnn.dll
+    $<TARGET_FILE_DIR:domino_sr_bench>
+)
+
 # 测试运行：assets 指向仓库测试视频目录，data 用系统临时目录
 add_test(NAME domino_tests COMMAND domino_tests
   --assets ${CMAKE_CURRENT_SOURCE_DIR}/tests/assets

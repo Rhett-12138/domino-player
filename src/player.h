@@ -27,7 +27,7 @@ public:
 
   // ---- 配置 ----
   void setConfig(const Config& c) { cfg_ = c; }
-  void setNoSR(bool b) { noSR_ = b; }
+  void setNoSR(bool b) { noSR_ = b; srFailed_ = false; }
   void setSRTarget(int presetIdx, int targetW) { srPresetIdx_ = presetIdx; srTargetW_ = targetW; }
   void setInW(int w) { inW_ = w; }   // 手动 SR 输入宽（--in）
 
@@ -54,6 +54,8 @@ public:
   bool eof() const { return eof_; }
   bool noSR() const { return noSR_; }
   int srTargetW() const { return srTargetW_; }
+  bool srReady() const { return srInited_; }
+  bool srFailed() const { return srFailed_; }
 
   // ---- 控制 ----
   void setPaused(bool p);
@@ -70,8 +72,8 @@ public:
   void pump();
   // 处理挂起的 seek（若有）；返回是否发生了 seek（需要重置调度）
   bool processSeek();
-  // 预取解码+SR 下一帧（如需要）
-  void prefetch();
+  // 预取解码+SR 下一帧（如需要）；decodeOnly=true 只解码、不跑 SR（用于停摆追帧）
+  void prefetch(bool decodeOnly = false);
   // 是否有已处理好的帧且已到呈现截止时间（惰性初始化 baseWall）
   bool readyToPresent();
   // 呈现当前帧：上传纹理 + 推进播放时钟；返回本帧是否应启动音频
@@ -129,6 +131,7 @@ private:
   int srTargetW_ = 1920;
   int inW_ = 0;                 // 手动 SR 输入宽（--in）
   bool srInited_ = false;
+  bool srFailed_ = false;
 
   std::vector<uint8_t> rgbBuf_; // 解码帧缓冲（源尺寸）
   std::vector<uint8_t> srgb_;   // 处理后帧（可能为超分输出）
@@ -161,6 +164,9 @@ private:
   double audioMediaBase_ = 0;
   double lastAudioClock_ = 0;
   double lastAudioClockWall_ = 0;
+  double lastPumpWall_ = 0;
+  bool catchingUp_ = false;
+  double catchupDeadline_ = 0;
   bool audioClockValid_ = false;
   long long presentedFrames_ = 0;
   bool havePending_ = false;
