@@ -14,16 +14,22 @@
 #include <string>
 
 #include "../../src/config.h"
+#include "../../src/log.h"
 #include "../../src/player.h"
 #include "../../src/audio.h"
 #include "../../src/frame_output.h"
 #include "../../src/task.h"
+#include "gpu_frame_output.h"
+
+#include <cstdlib>
 
 // 引擎句柄：Player + 帧输出 + Flutter 纹理 + 任务中心
 struct EngineHandle {
   Config cfg;
   Player* player = nullptr;
-  EngineFrameOutput* out = nullptr;
+  GpuFrameOutput* gpuOut = nullptr;       // D3D11/HLSL 美颜（优先）
+  EngineFrameOutput* cpuOut = nullptr;    // CPU 回退
+  IFrameOutput* out = nullptr;            // 指向 gpuOut 或 cpuOut
   std::unique_ptr<TaskCenter> tasks;      // 离线超分任务中心
   FlutterDesktopTextureRegistrarRef registrar = nullptr;
   int64_t texture_id = -1;
@@ -48,7 +54,7 @@ static uint8_t g_black_px[4] = { 0, 0, 0, 255 };
 static const FlutterDesktopPixelBuffer* CopyPixels(size_t w, size_t h, void* user_data) {
   EngineHandle* e = (EngineHandle*)user_data;
   if (!e) return nullptr;
-  if (!e->out) {
+  if (!e->cpuOut) {
     e->pb.buffer = g_black_px;
     e->pb.width = 1;
     e->pb.height = 1;
@@ -57,16 +63,16 @@ static const FlutterDesktopPixelBuffer* CopyPixels(size_t w, size_t h, void* use
   int ow = 0, oh = 0;
   const uint8_t* src = nullptr;
   {
-    std::lock_guard<std::mutex> lk(e->out->lock());
-    ow = e->out->width();
-    oh = e->out->height();
+    std::lock_guard<std::mutex> lk(e->cpuOut->lock());
+    ow = e->cpuOut->width();
+    oh = e->cpuOut->height();
     if (ow <= 0 || oh <= 0) {
       e->pb.buffer = g_black_px;
       e->pb.width = 1;
       e->pb.height = 1;
       return &e->pb;
     }
-    src = e->out->frame();
+    src = e->cpuOut->frame();
     if ((size_t)ow * oh * 4 != e->rgba[e->rgbaFlip].size())
       e->rgba[e->rgbaFlip].resize((size_t)ow * oh * 4);
     uint8_t* dst = e->rgba[e->rgbaFlip].data();
@@ -86,18 +92,67 @@ static const FlutterDesktopPixelBuffer* CopyPixels(size_t w, size_t h, void* use
   return &e->pb;
 }
 
+// Flutter 光栅线程取 GPU 共享纹理；引用计数由 GpuFrameOutput 的 release callback 管理
+static const FlutterDesktopGpuSurfaceDescriptor* CopyGpuSurface(size_t w, size_t h, void* user_data) {
+  EngineHandle* e = (EngineHandle*)user_data;
+  if (!e || !e->gpuOut) return nullptr;
+  return e->gpuOut->acquireDescriptor();
+}
+
 void DominoRegisterPlugin(FlutterDesktopPluginRegistrarRef registrar) {
   if (!g_engine) g_engine = new EngineHandle();
   g_engine->registrar = FlutterDesktopRegistrarGetTextureRegistrar(registrar);
   // 取宿主 view 窗口句柄（全屏切换用；实际作用于其顶层窗口）
   FlutterDesktopViewRef view = FlutterDesktopPluginRegistrarGetView(registrar);
   if (view) g_engine->hwnd = FlutterDesktopViewGetHWND(view);
+
+  if (!g_engine->out) {
+    const char* forceCpu = getenv("DOMINO_CPU_BEAUTY");
+    if (!(forceCpu && *forceCpu && strcmp(forceCpu, "0") != 0)) {
+      GpuFrameOutput* gpu = new GpuFrameOutput();
+      if (gpu->ok()) {
+        g_engine->gpuOut = gpu;
+        g_engine->out = gpu;
+      } else {
+        delete gpu;
+      }
+    }
+    if (!g_engine->out) {
+      g_engine->cpuOut = new EngineFrameOutput();
+      g_engine->out = g_engine->cpuOut;
+    }
+  }
+
   FlutterDesktopTextureInfo info = {};
-  info.type = kFlutterDesktopPixelBufferTexture;
-  info.pixel_buffer_config.callback = CopyPixels;
-  info.pixel_buffer_config.user_data = g_engine;
+  if (g_engine->gpuOut) {
+    info.type = kFlutterDesktopGpuSurfaceTexture;
+    info.gpu_surface_config.struct_size = sizeof(FlutterDesktopGpuSurfaceTextureConfig);
+    info.gpu_surface_config.type = kFlutterDesktopGpuSurfaceTypeDxgiSharedHandle;
+    info.gpu_surface_config.callback = CopyGpuSurface;
+    info.gpu_surface_config.user_data = g_engine;
+  } else {
+    info.type = kFlutterDesktopPixelBufferTexture;
+    info.pixel_buffer_config.callback = CopyPixels;
+    info.pixel_buffer_config.user_data = g_engine;
+  }
   g_engine->texture_id =
       FlutterDesktopTextureRegistrarRegisterExternalTexture(g_engine->registrar, &info);
+
+  // GPU surface 注册被引擎拒绝时回退像素纹理，避免 Texture(-1) 永久黑屏
+  if (g_engine->texture_id < 0 && g_engine->gpuOut) {
+    logx::warn("gpu surface texture registration failed; falling back to CPU");
+    delete g_engine->gpuOut;
+    g_engine->gpuOut = nullptr;
+    g_engine->out = nullptr;
+    g_engine->cpuOut = new EngineFrameOutput();
+    g_engine->out = g_engine->cpuOut;
+    FlutterDesktopTextureInfo cpuInfo = {};
+    cpuInfo.type = kFlutterDesktopPixelBufferTexture;
+    cpuInfo.pixel_buffer_config.callback = CopyPixels;
+    cpuInfo.pixel_buffer_config.user_data = g_engine;
+    g_engine->texture_id =
+        FlutterDesktopTextureRegistrarRegisterExternalTexture(g_engine->registrar, &cpuInfo);
+  }
 }
 
 // ---- FFI 导出 ----
@@ -107,7 +162,10 @@ void* domino_create(const char* model_dir, const char* data_root) {
   if (!e->player) {
     e->cfg.modelBase = model_dir ? model_dir : "";
     e->cfg.dataRoot = data_root ? data_root : "";
-    e->out = new EngineFrameOutput();
+    if (!e->out) {
+      e->cpuOut = new EngineFrameOutput();
+      e->out = e->cpuOut;
+    }
     e->player = new Player(*e->out);
     e->player->setConfig(e->cfg);
     e->player->setNoSR(true);
@@ -130,9 +188,13 @@ void domino_destroy(void* h) {
   if (e->tasks) e->tasks->shutdown();
   if (e->player) e->player->shutdown();
   delete e->player; e->player = nullptr;
-  EngineFrameOutput* out = e->out;
   e->out = nullptr;               // 先摘指针，再释放帧输出
-  delete out;
+  GpuFrameOutput* gpu = e->gpuOut;
+  e->gpuOut = nullptr;
+  delete gpu;
+  EngineFrameOutput* cpu = e->cpuOut;
+  e->cpuOut = nullptr;
+  delete cpu;
   e->tasks.reset();               // 任务线程已 join，析构不再等待
   ncnn::destroy_gpu_instance();
   if (g_engine == e) g_engine = nullptr;
@@ -161,25 +223,29 @@ void domino_beauty(void* h, float smooth, float white) {
   if (!e) return;
   e->player->setBeauty(smooth, white);
   EngineBeautyParams bp = e->player->beauty();
-  e->out->setBeautyParams(bp);
+  if (e->gpuOut) e->gpuOut->setBeautyParams(bp);
+  else if (e->cpuOut) e->cpuOut->setBeautyParams(bp);
 }
 void domino_filter(void* h, int idx, float amt) {
   EngineHandle* e = (EngineHandle*)h;
   if (!e) return;
   e->player->setFilter(idx, amt);
   EngineBeautyParams bp = e->player->beauty();
-  e->out->setBeautyParams(bp);
+  if (e->gpuOut) e->gpuOut->setBeautyParams(bp);
+  else if (e->cpuOut) e->cpuOut->setBeautyParams(bp);
 }
 
 void domino_pump(void* h) {
   EngineHandle* e = (EngineHandle*)h;
   if (!e || !e->player) return;
-  // 无锁驱动：presentFrame 内部锁内只做缓冲交换，解码/超分/美颜不阻塞光栅线程
+  // 无锁驱动：GPU/CPU 输出的重活都不在 Flutter 光栅线程
   e->player->pump();
-  if (e->out->hasNewFrame()) {
+  bool fresh = e->gpuOut ? e->gpuOut->hasNewFrame() : (e->cpuOut && e->cpuOut->hasNewFrame());
+  if (fresh) {
     if (e->registrar && e->texture_id >= 0)
       FlutterDesktopTextureRegistrarMarkExternalTextureFrameAvailable(e->registrar, e->texture_id);
-    e->out->clearNewFrame();
+    if (e->gpuOut) e->gpuOut->clearNewFrame();
+    else if (e->cpuOut) e->cpuOut->clearNewFrame();
   }
 }
 
@@ -228,18 +294,28 @@ int domino_set_fullscreen(void* h, int on) {
 // 当前视频帧尺寸（宽/高）：优先取帧输出实际尺寸，无帧时退回源尺寸
 int domino_frame_w(void* h) {
   EngineHandle* e = (EngineHandle*)h;
-  if (!e || !e->out) return 0;
-  std::lock_guard<std::mutex> lk(e->out->lock());
-  int w = e->out->width();
-  if (w > 0) return w;
+  if (!e) return 0;
+  if (e->gpuOut) {
+    int w = e->gpuOut->width();
+    if (w > 0) return w;
+  } else if (e->cpuOut) {
+    std::lock_guard<std::mutex> lk(e->cpuOut->lock());
+    int w = e->cpuOut->width();
+    if (w > 0) return w;
+  }
   return e->player ? e->player->srcW() : 0;
 }
 int domino_frame_h(void* h) {
   EngineHandle* e = (EngineHandle*)h;
-  if (!e || !e->out) return 0;
-  std::lock_guard<std::mutex> lk(e->out->lock());
-  int hgt = e->out->height();
-  if (hgt > 0) return hgt;
+  if (!e) return 0;
+  if (e->gpuOut) {
+    int hgt = e->gpuOut->height();
+    if (hgt > 0) return hgt;
+  } else if (e->cpuOut) {
+    std::lock_guard<std::mutex> lk(e->cpuOut->lock());
+    int hgt = e->cpuOut->height();
+    if (hgt > 0) return hgt;
+  }
   return e->player ? e->player->srcH() : 0;
 }
 
@@ -431,24 +507,36 @@ int domino_open_dialog(void* h, const char* initialPath, char* buf, int cap) {
 // ---- 滤镜缩略图 ----
 int domino_make_previews(void* h, int count) {
   EngineHandle* e = (EngineHandle*)h;
-  if (!e || !e->out || count < 1) return 0;
-  e->out->makeFilterPreviews(count);
-  return e->out->previewCount();
+  if (!e || count < 1) return 0;
+  if (e->gpuOut) {
+    e->gpuOut->makeFilterPreviews(count);
+    return e->gpuOut->previewCount();
+  }
+  if (e->cpuOut) {
+    e->cpuOut->makeFilterPreviews(count);
+    return e->cpuOut->previewCount();
+  }
+  return 0;
 }
 int domino_preview_w(void* h) {
   EngineHandle* e = (EngineHandle*)h;
-  return (e && e->out) ? e->out->previewWidth() : 0;
+  if (!e) return 0;
+  return e->gpuOut ? e->gpuOut->previewWidth() : (e->cpuOut ? e->cpuOut->previewWidth() : 0);
 }
 int domino_preview_h(void* h) {
   EngineHandle* e = (EngineHandle*)h;
-  return (e && e->out) ? e->out->previewHeight() : 0;
+  if (!e) return 0;
+  return e->gpuOut ? e->gpuOut->previewHeight() : (e->cpuOut ? e->cpuOut->previewHeight() : 0);
 }
 int domino_preview_buf(void* h, int idx, uint8_t* dst, int cap) {
   EngineHandle* e = (EngineHandle*)h;
-  if (!e || !e->out) return 0;
-  const uint8_t* p = e->out->previewBuffer(idx);
+  if (!e) return 0;
+  const uint8_t* p = e->gpuOut ? e->gpuOut->previewBuffer(idx)
+                               : (e->cpuOut ? e->cpuOut->previewBuffer(idx) : nullptr);
   if (!p) return 0;
-  int n = e->out->previewWidth() * e->out->previewHeight() * 3;
+  int w = e->gpuOut ? e->gpuOut->previewWidth() : e->cpuOut->previewWidth();
+  int hh = e->gpuOut ? e->gpuOut->previewHeight() : e->cpuOut->previewHeight();
+  int n = w * hh * 3;
   if (dst && cap >= n) memcpy(dst, p, (size_t)n);
   return n;
 }

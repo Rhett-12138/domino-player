@@ -11,6 +11,7 @@ set(NCNN_ROOT "${REPO_ROOT}/libs/ncnn/ncnn-20260526-windows-vs2022-shared")
 
 add_library(domino_engine SHARED
   engine_bridge.cpp
+  gpu_frame_output.cpp
   ${ENGINE_SRC}/config.cpp
   ${ENGINE_SRC}/decode.cpp
   ${ENGINE_SRC}/encode.cpp
@@ -38,9 +39,12 @@ target_link_libraries(domino_engine PRIVATE
   ${NCNN_ROOT}/x64/lib/ncnn.lib
   ole32.lib
   shell32.lib
+  d3d11.lib
+  dxgi.lib
+  d3dcompiler.lib
 )
 
-target_compile_definitions(domino_engine PRIVATE NCNN_VULKAN)
+target_compile_definitions(domino_engine PRIVATE NCNN_VULKAN NOMINMAX)
 target_compile_definitions(domino_engine PRIVATE
   "DOMINO_DEFAULT_MODEL_DIR=\"${REPO_ROOT}/assets/models/sr/ncnn/\"")
 target_compile_features(domino_engine PRIVATE cxx_std_17)

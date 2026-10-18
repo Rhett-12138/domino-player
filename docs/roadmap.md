@@ -24,13 +24,13 @@
 - [x] 清理 ImGui 旧前端（`src/main.cpp`、`src/ui/`、`src/render.*`、`libs/imgui`）
 - [x] 稳定化（2026-10，见 `docs/plan-bugfix-2026-10.md`）：模型路径拼接、失败任务重试崩溃、暂停恢复快进、续编取消丢分段、GPU 实例生命周期、WASAPI/解码资源释放
 - [x] A/V 同步与 PTS（2026-10，见 `docs/plan-av-sync-2026-10.md`）：音频时钟驱动视频、按 PTS 呈现、音频 seek 线程安全、编码保留 29.97/23.976 精确帧率、关闭 B 帧消除 66ms 起点偏移
+- [x] GPU 着色器美颜（2026-10，见 `docs/plan-gpu-beauty-2026-10.md`）：D3D11 HLSL 两遍高斯 + 磨皮/美白/滤镜，Flutter GPU surface 上屏；CPU 路径保留为回退
 
 ### 进行中 / 待办（按优先级）
 1. [ ] **任务中心端到端人工验收**：建任务 → 编码 → 进度 → 断点续编 → 边播放（自动化难驱动 Flutter 控件，需人工过一遍）
-2. [ ] **GPU 着色器版 `IFrameOutput`**：替换 CPU 美颜（大分辨率/开 SR 时的性能瓶颈），接口已就绪
-3. [ ] **实时 SR 播放**：当前 `setNoSR(true)`；评估开 SR 后的帧率与降级策略
-4. [ ] 打包分发：安装包/绿色版、图标、关于页
-5. [ ] 移动端验证：Android/iOS 注入 `AudioSink` 实现（引擎已可移植）
+2. [ ] **实时 SR 播放**：当前 `setNoSR(true)`；评估开 SR 后的帧率与降级策略（GPU 美颜已就绪）
+3. [ ] 打包分发：安装包/绿色版、图标、关于页
+4. [ ] 移动端验证：Android/iOS 注入 `AudioSink` 实现（引擎已可移植）
 
 ## 里程碑
 | 里程碑 | 内容 | 状态 |

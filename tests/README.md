@@ -13,8 +13,12 @@ ctest --test-dir build -C Release
 - `player`：播放状态机冒烟（open/呈现/暂停/seek/EOF，注入哑音频 sink）；暂停恢复不快进；EOF 内部回卷保留 eof、外部 seek 清除 EOF；音频时钟驱动视频（fake clock 2x）
 - `config`：默认配置与模型路径拼接（注入目录带/不带末尾分隔符都必须合法）
 - `beauty`：肤色判定/磨皮/美白/全部滤镜预设方向
-- `frame_output`：美颜快路径/双缓冲交换/滤镜缩略图生成/垂直高斯上下对称
+- `frame_output`：CPU 回退路径的美颜快路径/双缓冲交换/滤镜缩略图/垂直高斯上下对称
 - `sr`：NCNN 模型冒烟（无 GPU 时自动跳过）
+
+GPU 着色器美颜（`flutter/native/gpu_frame_output.cpp`）依赖真实 D3D11/Flutter GPU surface，
+headless 单测覆盖不到；需按 `docs/plan-gpu-beauty-2026-10.md` 做实机冒烟：播放 1080p/4K、
+黑白滤镜、磨皮/美白，并验证 `DOMINO_CPU_BEAUTY=1` 回退。
 
 Flutter 测试（`cd flutter && flutter test`，纯 Dart，无需 DLL）：
 - `format_test`：时间格式化、任务状态名、滤镜列表（纯函数）

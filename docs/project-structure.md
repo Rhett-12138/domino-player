@@ -35,8 +35,9 @@ domino-player/
 │   │   ├── core/format.dart      # 展示层纯函数（时间/状态名/滤镜名/RGB 转换）
 │   │   └── ui/task_center.dart   # 任务中心（新建/开始/停止/续编/边播放/删除）
 │   ├── native/           # C++ 引擎桥
-│   │   ├── engine_bridge.{h,cpp}  # extern "C" 导出 + Flutter 像素纹理 + 文件框 + 全屏
-│   │   └── CMakeLists.txt        # 构建 domino_engine.dll（链接 domino_core + player/audio + FFmpeg/NCNN + Flutter）
+│   │   ├── engine_bridge.{h,cpp}  # extern "C" 导出 + Flutter 纹理 + 文件框 + 全屏
+│   │   ├── gpu_frame_output.{h,cpp} # D3D11/HLSL 美颜 + DXGI shared texture；失败回退 CPU
+│   │   └── CMakeLists.txt        # 构建 domino_engine.dll（链接 domino_core + player/audio + FFmpeg/NCNN + Flutter + D3D11）
 │   ├── windows/          # Windows 桌面 embedder（runner 注册 DominoRegisterPlugin；POST_BUILD 拷 DLL/模型）
 │   └── test/             # Dart 测试（FakeEngine 桩，无需 DLL）
 ├── assets/models/sr/ncnn/
