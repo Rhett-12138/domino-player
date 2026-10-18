@@ -8,8 +8,8 @@ ctest --test-dir build -C Release
 ```
 `domino_tests.exe` 覆盖：
 - `decode`：MediaStream 打开/逐帧解码/seek/资源释放幂等/close 复位
-- `encode`：encodeOffline 产物时长、remuxFaststart 进度与时长、断点续编+合并（含时间戳衔接）、检查点滞后时合并不丢尾段；29.97 源保持 30000/1001 且帧数完整；非 0 起点 `.ts`（start_time≈2.8s）音视频归一；解码 EAGAIN 不丢帧
-- `task`：任务持久化（meta）/重启扫描/断点恢复/删除；失败状态与重试（joinable 线程回归）；续编取消保留分段并再次完成；已合并分段不重复拼接；`.merging`/`.bak` 恢复；续编段缺主文件拒绝提升；空描述 meta 解析
+- `encode`：encodeOffline 产物时长、remuxFaststart 进度与时长、断点续编+合并（含时间戳衔接）、检查点滞后时合并不丢尾段；29.97 源保持 30000/1001 且帧数完整；非 0 起点 `.ts`（start_time≈2.8s）音视频归一；解码 EAGAIN 不丢帧；离线 SR 输入宽 FullSource/Balanced/Fast 选择（1080p 源不应先缩到 640）
+- `task`：任务持久化（meta）/重启扫描/断点恢复/删除；失败状态与重试（joinable 线程回归）；续编取消保留分段并再次完成；已合并分段不重复拼接；`.merging`/`.bak` 恢复；续编段缺主文件拒绝提升；空描述 meta 解析；带 SR 任务完成后产物为 1920×1080
 - `player`：播放状态机冒烟（open/呈现/暂停/seek/EOF，注入哑音频 sink）；暂停恢复不快进；EOF 内部回卷保留 eof、外部 seek 清除 EOF；音频时钟驱动视频（fake clock 2x）；SR 失败回退源帧；暂停中 seek、连续 seek generation；Ticker 停摆后异步追帧；SR 自动降档（慢输出模拟落后，4K→1080p、1080p→关闭）
 - `config`：默认配置与模型路径拼接（注入目录带/不带末尾分隔符都必须合法）
 - `beauty`：肤色判定/磨皮/美白/全部滤镜预设方向
@@ -25,10 +25,12 @@ headless 单测覆盖不到；需按 `docs/plan-gpu-beauty-2026-10.md` 做实机
 ```bash
 cmake --build build --target domino_sr_bench --config Release
 ./build/Release/domino_sr_bench.exe ./tests/assets
+# 可选：离线质量对比（源路径、目标宽；默认 test_av / 1920）
+./build/Release/domino_sr_bench.exe ./tests/assets "%TEMP%/test_1080.mp4" 2560
 ```
 
-输出：720p 源 → 1080p/2K/4K 的直接 `SR::process` ms/帧、理论 FPS，以及 Player 端到端 FPS。
-不加入 ctest（依赖 GPU/模型，耗时长）；结果记录在 `docs/plan-sr-playback-2026-10.md`。
+输出：720p 源 → 1080p/2K/4K 的直接 `SR::process` ms/帧、理论 FPS，Player 端到端 FPS，以及 Fast/Balanced/FullSource 离线编码耗时/文件大小/路径。
+不加入 ctest（依赖 GPU/模型，耗时长）；结果记录在 `docs/plan-sr-playback-2026-10.md`、`docs/plan-offline-sr-quality-2026-10.md`。
 
 Flutter 测试（`cd flutter && flutter test`，纯 Dart，无需 DLL）：
 - `format_test`：时间格式化、任务状态名、滤镜列表（纯函数）

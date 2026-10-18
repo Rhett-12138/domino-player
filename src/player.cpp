@@ -132,7 +132,7 @@ void Player::setSRTarget(int presetIdx, int targetW) {
 }
 
 void Player::maybeAutoDegrade(double now) {
-  if (noSR_.load() || srCeilingW_.load() <= 0) return;
+  if (!autoDegradeEnabled_.load() || noSR_.load() || srCeilingW_.load() <= 0) return;
   if (now < autoCooldownUntil_) return;
   if (now - lastAutoCheck_ < 0.20) return;
   lastAutoCheck_ = now;

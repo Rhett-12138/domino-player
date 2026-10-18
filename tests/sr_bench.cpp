@@ -3,6 +3,7 @@
 #include "frame_output.h"
 #include "audio_interface.h"
 #include "decode.h"
+#include "encode.h"
 #include "sr.h"
 
 #include <ncnn/gpu.h>
@@ -10,6 +11,7 @@
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
 #include <string>
 #include <thread>
 #include <vector>
@@ -35,6 +37,8 @@ static double nowSec() {
 int main(int argc, char** argv) {
   const std::string assets = argc > 1 ? argv[1] : "tests/assets";
   const std::string src = assets + "/test_long.mp4";
+  const std::string offlineSrc = argc > 2 ? argv[2] : assets + "/test_av.mp4";
+  const int offlineTarget = argc > 3 ? atoi(argv[3]) : 1920;
   Config cfg = Config::defaults();
 
   // 1) 直接测 SR 推理：720p 源 → 目标宽 / 4 的模型输入
@@ -67,7 +71,34 @@ int main(int argc, char** argv) {
   sr.clear();
   ms.close();
 
-  // 2) 端到端 Player：解码 + SR + 呈现（无 CPU 美颜）
+  // 2) 离线质量档：同一 720p 源，比较 Fast/Balanced/FullSource 输入
+  printf("\nOffline encode (2s -> %d, CRF18):\n", offlineTarget);
+  printf("  mode       time(s)   out MB   path\n");
+  const std::string shortSrc = offlineSrc;
+  struct ModeInfo { SRInputQuality q; const char* name; };
+  const ModeInfo modes[] = {
+    { SRInputQuality::Fast, "fast" },
+    { SRInputQuality::Balanced, "balanced" },
+    { SRInputQuality::FullSource, "full" },
+  };
+  for (const auto& m : modes) {
+    EncodeOptions eo;
+    eo.verbose = false;
+    eo.modelBase = cfg.modelBase;
+    eo.srInput = m.q;
+    std::string out = (std::filesystem::temp_directory_path() /
+      ("domino_offline_" + std::string(m.name) + ".mp4")).string();
+    double t0 = nowSec();
+    bool ok = encodeOffline(shortSrc.c_str(), out.c_str(), offlineTarget, eo);
+    double dt = nowSec() - t0;
+    std::error_code ec;
+    auto sz = std::filesystem::file_size(out, ec);
+    printf("  %-9s  %7.2f   %6.1f   %s\n", m.name, dt,
+           ec ? 0.0 : sz / (1024.0 * 1024.0), out.c_str());
+    if (!ok) printf("  ^ encode failed\n");
+  }
+
+  // 3) 端到端 Player：解码 + SR + 呈现（无 CPU 美颜）
   printf("\nPlayer end-to-end (3.0s each, dummy audio, CPU beauty off):\n");
   printf("  target  presented  fps\n");
   for (int target : { 1920, 2560, 3840 }) {
@@ -75,6 +106,7 @@ int main(int argc, char** argv) {
     Player p(out);
     p.setAudioSink(std::make_unique<DummyAudioSink>());
     p.setConfig(cfg);
+    p.setAutoDegradeEnabled(false);   // 基准测指定档位，不自动降档
     p.setSRTarget(0, target);
     p.setNoSR(false);
     if (!p.open(src.c_str())) {

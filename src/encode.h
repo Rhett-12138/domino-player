@@ -1,6 +1,7 @@
 #pragma once
 #include "decode.h"
 #include "sr.h"
+#include <algorithm>
 #include <atomic>
 #include <functional>
 
@@ -24,6 +25,16 @@ struct EncodeProgress {
 // 预览回调：编码线程每产出一帧调用（RGB24, w×h），用于实时预览
 typedef void (*EncodePreviewFn)(const uint8_t* rgb, int w, int h, void* userdata);
 
+// SR 输入策略：离线默认尽量保留源细节，4x 输出后再缩到目标尺寸。
+enum class SRInputQuality {
+  Fast,         // target/4，最快，细节损失最大
+  Balanced,     // 约 3/4 源宽，兼顾细节与耗时
+  FullSource,   // max(target/4, min(srcW,1920))，尽量保留源宽并限制中间帧
+};
+
+// 选择 4x 模型的输入宽；保证 4*inW >= targetW（源极小时除外）。
+int chooseSRInputWidth(int srcW, int targetW, SRInputQuality q);
+
 struct EncodeOptions {
   bool verbose = true;
   EncodeProgress* prog = nullptr;
@@ -32,6 +43,9 @@ struct EncodeOptions {
   double startTime = 0;         // 从源视频该秒开始（断点续编）；0=从头
   long long startFrame = 0;     // 帧号偏移（续编时继续旧帧号）
   std::string modelBase;        // NCNN 模型目录（空=Config::defaults()）
+  SRInputQuality srInput = SRInputQuality::FullSource;  // 离线默认质量优先
+  int crf = 18;                 // x264 CRF；0=用 bit_rate
+  std::string preset = "slow";
 };
 
 // 离线超分：全片处理 + libx264 编码输出 fMP4（边写边可播放，含音频流复制）

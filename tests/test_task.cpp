@@ -261,10 +261,16 @@ TEST(TaskWithSRCompletes) {
   EXPECT_TRUE(t != nullptr);
   tc.start(t);
   int wait = 0;
-  while (t->status.load() == ST_RUNNING && wait < 400) { std::this_thread::sleep_for(std::chrono::milliseconds(50)); wait++; }
+  // FullSource 离线 SR 比旧 target/4 慢，给慢机器更充足时间
+  while (t->status.load() == ST_RUNNING && wait < 1200) { std::this_thread::sleep_for(std::chrono::milliseconds(50)); wait++; }
   EXPECT_TRUE(t->status.load() == ST_DONE);
   EXPECT_TRUE(std::filesystem::exists(t->temp));
   EXPECT_TRUE(t->frames > 40);
+  MediaStream out;
+  EXPECT_TRUE(out.open(t->temp.c_str()));
+  EXPECT_EQ(out.vw, 1920);   // FullSource 720p → 1920 输出，不能被中间尺寸截断
+  EXPECT_EQ(out.vh, 1080);
+  out.close();
 }
 
 // 删除任务：文件夹递归删除

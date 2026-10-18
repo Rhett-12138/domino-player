@@ -18,6 +18,23 @@ extern "C" {
 #include <libavutil/imgutils.h>
 }
 
+int chooseSRInputWidth(int srcW, int targetW, SRInputQuality q) {
+  const int fast = targetW / 4;
+  if (targetW <= 0 || srcW <= 0) return 0;
+  // 限制中间帧峰值：1080p→4K FullSource 实测 ~1.9GB；2K 源不再放大到 10240。
+  const int cap = 1920;
+  switch (q) {
+    case SRInputQuality::Fast:
+      return fast;
+    case SRInputQuality::Balanced:
+      // 真正的中间档：默认 3/4 源宽，避免 1080p→4K 直接等同 FullSource。
+      return (std::max)(fast, (std::min)(cap, (std::min)(srcW, (std::max)(srcW * 3 / 4, targetW / 4))));
+    case SRInputQuality::FullSource:
+    default:
+      return (std::max)(fast, (std::min)(srcW, cap));
+  }
+}
+
 bool encodeOffline(const char* srcPath, const char* outPath, int targetW, const EncodeOptions& opts) {
   bool verbose = opts.verbose;
   EncodeProgress* prog = opts.prog;
@@ -76,7 +93,11 @@ bool encodeOffline(const char* srcPath, const char* outPath, int targetW, const 
   }
   int outW = needSR ? targetW : srcW;
   int outH = needSR ? (int)(((size_t)srcH * targetW / srcW) & ~1) : srcH;
-  int inW = targetW / 4;
+  int inW = needSR ? chooseSRInputWidth(srcW, targetW, opts.srInput) : srcW;
+  if (inW > 1) inW &= ~1;   // 模型输入宽保持偶数
+  const int inH = needSR ? (int)(((int64_t)srcH * inW / srcW) & ~1) : srcH;
+  const int encInW = needSR ? inW * 4 : srcW;
+  const int encInH = needSR ? inH * 4 : srcH;
 
   // ---- 输出：fMP4（边写边可播放）+ h264 + 音频流复制 ----
   OutFmtGuard ofmt;
@@ -99,13 +120,15 @@ bool encodeOffline(const char* srcPath, const char* outPath, int targetW, const 
   ectx.p->time_base = av_inv_q(srcRate);
   ectx.p->framerate = srcRate;
   ectx.p->pix_fmt = AV_PIX_FMT_YUV420P;
-  ectx.p->bit_rate = 10 * 1000 * 1000;
+  // 离线默认质量优先：CRF 18；opts.crf=0 时回退固定码率
+  ectx.p->bit_rate = opts.crf > 0 ? 0 : 10 * 1000 * 1000;
   ectx.p->gop_size = 60;
   // 关闭 B 帧：B 帧会让首个 DTS 为负，fMP4 封装把时间轴整体后移约 2 帧，
   // 而音频仍从 0 开始，形成固定唇音不同步。
   ectx.p->max_b_frames = 0;
   ectx.p->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;  // SPS/PPS 放 extradata，fMP4 的 moov 在文件开头需要它
-  av_opt_set(ectx.p->priv_data, "preset", "veryfast", 0);
+  av_opt_set(ectx.p->priv_data, "preset", opts.preset.c_str(), 0);
+  if (opts.crf > 0) av_opt_set_int(ectx.p->priv_data, "crf", opts.crf, 0);
   // 关闭编码前瞻：否则视频包晚于音频数秒才输出，fMP4 交错时会把首个视频包
   // 之后的帧整体后移，造成音画错位/首帧显示数秒。
   av_opt_set(ectx.p->priv_data, "tune", "zerolatency", 0);
@@ -163,12 +186,35 @@ bool encodeOffline(const char* srcPath, const char* outPath, int targetW, const 
 
   // ---- 编码循环 ----
   SwsGuard swsOut;
-  swsOut.p = sws_getContext(outW, outH, AV_PIX_FMT_RGB24, outW, outH, AV_PIX_FMT_YUV420P, SWS_BILINEAR, nullptr, nullptr, nullptr);
+  swsOut.p = sws_getContext(encInW, encInH, AV_PIX_FMT_RGB24, outW, outH, AV_PIX_FMT_YUV420P,
+                            SWS_LANCZOS, nullptr, nullptr, nullptr);
+  if (!swsOut.p) { fprintf(stderr, "output sws init failed\n"); return false; }
+  // SR 推理失败时回退源帧：用独立缩放器，绝不静默丢帧。
+  SwsGuard swsFallback;
+  if (needSR) {
+    swsFallback.p = sws_getContext(srcW, srcH, AV_PIX_FMT_RGB24, outW, outH, AV_PIX_FMT_YUV420P,
+                                   SWS_LANCZOS, nullptr, nullptr, nullptr);
+    if (!swsFallback.p) { fprintf(stderr, "fallback sws init failed\n"); return false; }
+  }
+  SwsGuard swsPrev, swsPrevSrc;
+  std::vector<uint8_t> prevRgb;
+  if (opts.preview && needSR) {
+    if (encInW != outW || encInH != outH) {
+      swsPrev.p = sws_getContext(encInW, encInH, AV_PIX_FMT_RGB24, outW, outH, AV_PIX_FMT_RGB24,
+                                 SWS_BILINEAR, nullptr, nullptr, nullptr);
+    }
+    if (srcW != outW || srcH != outH) {
+      swsPrevSrc.p = sws_getContext(srcW, srcH, AV_PIX_FMT_RGB24, outW, outH, AV_PIX_FMT_RGB24,
+                                    SWS_BILINEAR, nullptr, nullptr, nullptr);
+    }
+    prevRgb.resize((size_t)outW * outH * 3);
+  }
   std::vector<uint8_t> rgb((size_t)srcW * srcH * 3);
   std::vector<uint8_t> srgb;
   std::vector<uint8_t> yuv((size_t)outW * outH * 3 / 2);
 
   long long count = 0;
+  long long srFallbackCount = 0;
   auto t0 = std::chrono::steady_clock::now();
   auto lastCheck = t0;
   if (prog) {
@@ -241,14 +287,45 @@ bool encodeOffline(const char* srcPath, const char* outPath, int targetW, const 
     sws_scale(swsIn.p, frame->data, frame->linesize, 0, srcH, d0, dl0);
 
     int sw = needSR ? sr.process(rgb.data(), srcW, srcH, inW, srgb) : srcW;
-    if (sw <= 0) return;
-    uint8_t* sp = needSR ? srgb.data() : rgb.data();
-    if (opts.preview) opts.preview(sp, outW, outH, opts.previewUserdata);
+    int sh = srcH;
+    uint8_t* sp = rgb.data();
+    SwsContext* yuvSws = swsOut.p;
+    bool fallback = false;
+    if (needSR) {
+      if (sw > 0) {
+        sh = (int)(srgb.size() / (size_t)sw / 3);
+        sp = srgb.data();
+      }
+      if (sw <= 0 || sw != encInW || sh != encInH) {
+        // 大图分配/推理失败：不能丢帧（否则 PTS 前移、任务假完成），回退源帧并最终判失败
+        logx::error("offline SR failed: sw=%d sh=%d expected=%dx%d; fallback source",
+                    sw, sh, encInW, encInH);
+        srFallbackCount++;
+        sw = srcW;
+        sh = srcH;
+        sp = rgb.data();
+        yuvSws = swsFallback.p;
+        fallback = true;
+      }
+    }
     int sl[1] = { sw * 3 };
+    if (opts.preview) {
+      if (sw != outW || sh != outH) {
+        SwsContext* pc = fallback ? swsPrevSrc.p : swsPrev.p;
+        if (pc) {
+          uint8_t* pd[1] = { prevRgb.data() };
+          int pl[1] = { outW * 3 };
+          sws_scale(pc, &sp, sl, 0, sh, pd, pl);
+          opts.preview(prevRgb.data(), outW, outH, opts.previewUserdata);
+        }
+      } else {
+        opts.preview(sp, outW, outH, opts.previewUserdata);
+      }
+    }
     size_t ysize = (size_t)outW * outH;
     uint8_t* d[3] = { yuv.data(), yuv.data() + ysize, yuv.data() + ysize + ysize / 4 };
     int ds[3] = { outW, outW / 2, outW / 2 };
-    sws_scale(swsOut.p, &sp, sl, 0, outH, d, ds);
+    sws_scale(yuvSws, &sp, sl, 0, sh, d, ds);
 
     FrameGuard f;
     f.p = av_frame_alloc();
@@ -362,10 +439,10 @@ bool encodeOffline(const char* srcPath, const char* outPath, int targetW, const 
   flushAudio(AV_NOPTS_VALUE);   // 写出剩余音频
   if (av_write_trailer(ofmt.p) < 0) writeError = true;
   double el = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
-  const bool ok = !cancelled && !writeError;
-  printf("ENCODE %s frames=%lld fps=%.1f out=%dx%d audio=%d -> %s\n",
-    cancelled ? "CANCELLED" : (writeError ? "ERROR" : "DONE"),
-    count, count / el, outW, outH, oas ? 1 : 0, outPath);
+  const bool ok = !cancelled && !writeError && srFallbackCount == 0;
+  printf("ENCODE %s frames=%lld fps=%.1f out=%dx%d audio=%d sr_fallback=%lld -> %s\n",
+    cancelled ? "CANCELLED" : (writeError ? "ERROR" : (srFallbackCount ? "SR_FAILED" : "DONE")),
+    count, count / el, outW, outH, oas ? 1 : 0, srFallbackCount, outPath);
   if (prog) { prog->fps.store(count / el); prog->done.store(true); prog->success.store(ok); }
 
   if (needSR) sr.clear();   // 全局 GPU 实例由前端统一管理

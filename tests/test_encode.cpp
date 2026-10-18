@@ -23,6 +23,19 @@ static std::string tempOut(const char* name) {
   return testcfg::dataDir() + "/" + name;
 }
 
+// 离线质量档：FullSource 不应把 1080p 源先缩到 640/960
+TEST(EncodeSRInputWidthQuality) {
+  EXPECT_EQ(chooseSRInputWidth(1920, 2560, SRInputQuality::Fast), 640);
+  EXPECT_EQ(chooseSRInputWidth(1920, 2560, SRInputQuality::Balanced), 1440);
+  EXPECT_EQ(chooseSRInputWidth(1920, 2560, SRInputQuality::FullSource), 1920);
+  EXPECT_EQ(chooseSRInputWidth(1920, 3840, SRInputQuality::FullSource), 1920);
+  EXPECT_EQ(chooseSRInputWidth(1280, 1920, SRInputQuality::FullSource), 1280);
+  // 源太大时限制中间帧（避免 2K 源 → 10240 宽）
+  EXPECT_EQ(chooseSRInputWidth(2560, 3840, SRInputQuality::FullSource), 1920);
+  // 源太小、4x 也不够目标宽时，仍用 target/4 保证输出尺寸
+  EXPECT_EQ(chooseSRInputWidth(320, 1920, SRInputQuality::FullSource), 480);
+}
+
 // 解码统计视频帧数（用于确认编码没有因 send EAGAIN 丢帧）
 static int countVideoFrames(const char* path) {
   AVFormatContext* fmt = nullptr;

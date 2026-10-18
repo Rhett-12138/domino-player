@@ -34,6 +34,7 @@ public:
   // setSRTarget(t>0) 会启用 SR 并重置自动降档（手动重选 = 重新尝试）。
   void setNoSR(bool b);
   void setSRTarget(int presetIdx, int targetW);
+  void setAutoDegradeEnabled(bool b) { autoDegradeEnabled_.store(b); }
   void setInW(int w) { inW_.store(w); }   // 手动 SR 输入宽（--in）
 
   // ---- 打开/关闭 ----
@@ -150,6 +151,7 @@ private:
   std::atomic<int> srCeilingW_{ 0 };   // 用户选择的档位（自动降档不改）
   std::atomic<int> srTargetW_{ 1920 }; // 当前实际档位
   std::atomic<bool> srAutoDegraded_{ false };
+  std::atomic<bool> autoDegradeEnabled_{ true };   // 基准测试可关闭
   std::atomic<int> inW_{ 0 };    // 手动 SR 输入宽（--in）
   std::atomic<bool> srInited_{ false };
   std::atomic<bool> srFailed_{ false };

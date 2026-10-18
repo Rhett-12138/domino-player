@@ -95,7 +95,8 @@ flutter run -d windows             # 开发运行（热重载）
 - **seek 要带 generation**：UI 递增 `seekGen_`、清队列并请求 worker seek；worker 在解码/SR 后校验 generation，丢弃在途旧帧。Ticker 停摆用 `dropUntilPts` 让 worker **只解码、不跑 SR**追帧；持续慢于实时不能丢帧，否则永不呈现。
 - **SR 失败回退**：`srFailed_` atomic；初始化/推理失败回退源帧，不每帧重试；`setNoSR(false)` 可重试。模型加载也应在 worker，不要阻塞 UI。
 - **SR 自动降档**：`maybeAutoDegrade` 每 ~200ms 看 `currentMediaClock - pendingPts/playhead`；lag>0.30s 持续 1s 后，4K/2K→1080p，1080p→关闭，设置 `dropUntilPts` 追到当前时钟并冷却 4s。不要在 Ticker 停摆时触发；手动选档必须清 `srAutoDegraded_` 并重试。
-- **SR 基准**：`domino_sr_bench`（不加入 ctest）测直接推理与 Player 端到端；改动 SR/呈现后重跑，数据写入 `docs/plan-sr-playback-2026-10.md` / `plan-sr-worker-2026-10.md`。
+- **离线 SR 质量优先**：`encodeOffline` 默认 `SRInputQuality::FullSource`，输入宽 `max(target/4, min(srcW,1920))`，**不要**改回固定 `target/4`；4x 输出用 `SWS_LANCZOS` 缩到目标。编码默认 CRF18 + preset slow，但必须保持 `max_b_frames=0 + tune=zerolatency`（fMP4/断点续编 A/V 约束）。1080p→4K 中间帧 7680×4320、峰值约 1.9GB；SR 失败必须回退源帧并最终判任务失败，不能 `return` 丢帧。后续用 tile。
+- **SR 基准**：`domino_sr_bench`（不加入 ctest）测直接推理、Player 端到端和 Fast/Balanced/FullSource 离线编码；改动 SR/呈现后重跑，数据写入 `docs/plan-sr-playback-2026-10.md` / `plan-sr-worker-2026-10.md` / `plan-offline-sr-quality-2026-10.md`。
 - **续编分段不能乱删**：续编取消/失败时保留 `task.mp4.resume`，下次启动先合并再继续；替换主文件必须先备份、失败回滚，禁止静默忽略 `remove/rename` 错误。
   - `.resume.merging` = 合并中的续编段；`.resume.cont` = 续编段标记（主文件丢失时禁止当首段提升）；`.bak` = 主文件替换备份，启动时先恢复。
   - 合并幂等按“分段**末**帧是否已被主文件覆盖”判断；不要用首帧（检查点可能落后约 1s，首帧早于主文件末尾是合法重叠）。
