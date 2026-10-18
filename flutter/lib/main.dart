@@ -48,6 +48,7 @@ class _HomeScreenState extends State<HomeScreen> {
   EngineApi? _engine;
   bool _showTasks = false;
   bool _playerFullscreen = false;
+  String _fileName = '';
   final _playerKey = GlobalKey<PlayerScreenState>();
 
   @override
@@ -79,6 +80,11 @@ class _HomeScreenState extends State<HomeScreen> {
     _playerKey.currentState?.openPath(path);
   }
 
+  void _openFile() {
+    if (_showTasks) setState(() => _showTasks = false);
+    _playerKey.currentState?.pickAndOpen();
+  }
+
   void _setTab(bool showTasks) {
     if (showTasks == _showTasks) return;
     final player = _playerKey.currentState;
@@ -95,17 +101,24 @@ class _HomeScreenState extends State<HomeScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       body: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           if (!_playerFullscreen) _buildTopBar(),
           Expanded(
             // 常驻两个页面：切标签不卸载 PlayerScreen（否则会重开默认视频、丢进度、音频继续）
             child: IndexedStack(
               index: _showTasks ? 1 : 0,
+              sizing: StackFit.expand,
               children: [
                 PlayerScreen(
                   key: _playerKey,
                   engine: _engine!,
                   historyPath: widget.historyPath,
+                  onFileChanged: (name) {
+                    if (mounted && _fileName != name) {
+                      setState(() => _fileName = name);
+                    }
+                  },
                   onFullscreenChanged: (on) {
                     if (mounted && _playerFullscreen != on) {
                       setState(() => _playerFullscreen = on);
@@ -140,7 +153,34 @@ class _HomeScreenState extends State<HomeScreen> {
             selected: {_showTasks},
             onSelectionChanged: (s) => _setTab(s.first),
           ),
-          const Spacer(),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Row(
+              children: [
+                Flexible(
+                  child: ConstrainedBox(
+                    constraints: const BoxConstraints(maxWidth: 280),
+                    child: Text(
+                      _fileName.isEmpty ? '未打开文件' : _fileName,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(color: Colors.white70, fontSize: 13),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Tooltip(
+                  message: '打开文件',
+                  child: TextButton.icon(
+                    onPressed: _openFile,
+                    icon: const Icon(Icons.folder_open, size: 18),
+                    label: const Text('打开'),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(width: 8),
           Text('Domino', style: TextStyle(color: Colors.white70, fontSize: 13)),
         ],
       ),
@@ -149,9 +189,10 @@ class _HomeScreenState extends State<HomeScreen> {
 }
 
 class PlayerScreen extends StatefulWidget {
-  const PlayerScreen({super.key, required this.engine, this.historyPath, this.onFullscreenChanged});
+  const PlayerScreen({super.key, required this.engine, this.historyPath, this.onFileChanged, this.onFullscreenChanged});
   final EngineApi engine;
   final String? historyPath;
+  final ValueChanged<String>? onFileChanged;
   final ValueChanged<bool>? onFullscreenChanged;
 
   @override
@@ -362,6 +403,9 @@ class PlayerScreenState extends State<PlayerScreen> with SingleTickerProviderSta
     _wasPlayingBeforeLeave = false;
   }
 
+  /// 供 HomeScreen 顶部「打开」按钮调用。
+  Future<void> pickAndOpen() => _pickAndOpen();
+
   /// 「打开」：弹出系统文件选择框，选择后播放。
   Future<void> _pickAndOpen() async {
     final e = widget.engine;
@@ -497,11 +541,17 @@ class PlayerScreenState extends State<PlayerScreen> with SingleTickerProviderSta
         _videoH = 0;
       }
     });
-    if (ok) _history.touch(_currentPath, position: resume > 0.05 ? resume : null);
-    if (!ok && mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('打开失败：文件不存在或无法解码')),
-      );
+    if (ok) {
+      _history.touch(_currentPath, position: resume > 0.05 ? resume : null);
+      widget.onFileChanged?.call(baseName(_currentPath));
+    }
+    if (!ok) {
+      widget.onFileChanged?.call('');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('打开失败：文件不存在或无法解码')),
+        );
+      }
     }
   }
 
@@ -523,8 +573,9 @@ class PlayerScreenState extends State<PlayerScreen> with SingleTickerProviderSta
     return Scaffold(
       backgroundColor: Colors.black,
       body: Stack(
+        fit: StackFit.expand,
         children: [
-          content,
+          Positioned.fill(child: content),
           if (_sidePanelOpen)
             Positioned.fill(
               child: GestureDetector(
@@ -533,18 +584,21 @@ class PlayerScreenState extends State<PlayerScreen> with SingleTickerProviderSta
                 child: Container(color: Colors.black45),
               ),
             ),
-          AnimatedPositioned(
-            duration: const Duration(milliseconds: 220),
-            curve: Curves.easeOutCubic,
-            top: 0,
-            bottom: 0,
-            width: 400,
-            right: _sidePanelOpen ? 0 : -400,
-            child: IgnorePointer(
-              ignoring: !_sidePanelOpen,
-              child: _buildSidePanel(e),
+          if (_sidePanelOpen)
+            Positioned(
+              top: 0,
+              bottom: 0,
+              width: 400,
+              right: 0,
+              child: TweenAnimationBuilder<double>(
+                tween: Tween(begin: 1, end: 0),
+                duration: const Duration(milliseconds: 220),
+                curve: Curves.easeOutCubic,
+                builder: (_, v, child) =>
+                    FractionalTranslation(translation: Offset(v, 0), child: child),
+                child: _buildSidePanel(e),
+              ),
             ),
-          ),
         ],
       ),
     );
@@ -552,8 +606,8 @@ class PlayerScreenState extends State<PlayerScreen> with SingleTickerProviderSta
 
   Widget _buildNormal(EngineApi e, Widget video) {
     return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        _buildPlayerTopBar(e),
         Expanded(child: video),
         _buildControlBar(e),
       ],
@@ -575,19 +629,6 @@ class PlayerScreenState extends State<PlayerScreen> with SingleTickerProviderSta
             children: [
               video,
               Positioned(
-                top: 0,
-                left: 0,
-                right: 0,
-                child: AnimatedOpacity(
-                  opacity: _fsControlsVisible ? 1 : 0,
-                  duration: const Duration(milliseconds: 180),
-                  child: IgnorePointer(
-                    ignoring: !_fsControlsVisible,
-                    child: _buildPlayerTopBar(e, overlay: true),
-                  ),
-                ),
-              ),
-              Positioned(
                 left: 0,
                 right: 0,
                 bottom: 0,
@@ -603,43 +644,6 @@ class PlayerScreenState extends State<PlayerScreen> with SingleTickerProviderSta
             ],
           ),
         ),
-      ),
-    );
-  }
-
-  Widget _buildPlayerTopBar(EngineApi e, {bool overlay = false}) {
-    final name = _currentPath.isEmpty ? '未打开文件' : baseName(_currentPath);
-    return Container(
-      height: 44,
-      padding: const EdgeInsets.only(left: 12, right: 6),
-      color: overlay ? Colors.black54 : const Color(0xFF1B1D25),
-      child: Row(
-        children: [
-          const Icon(Icons.movie_outlined, size: 18, color: Colors.white54),
-          const SizedBox(width: 8),
-          Expanded(
-            child: Text(
-              name,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: const TextStyle(fontSize: 13, color: Colors.white70),
-            ),
-          ),
-          Tooltip(
-            message: '打开文件',
-            child: TextButton.icon(
-              onPressed: _pickAndOpen,
-              icon: const Icon(Icons.folder_open, size: 18),
-              label: const Text('打开'),
-            ),
-          ),
-          IconButton(
-            tooltip: _fullscreen ? '退出全屏' : '全屏',
-            icon: Icon(_fullscreen ? Icons.fullscreen_exit : Icons.fullscreen),
-            color: _fullscreen ? Colors.lightBlueAccent : Colors.white54,
-            onPressed: _toggleFullscreen,
-          ),
-        ],
       ),
     );
   }
@@ -709,25 +713,28 @@ class PlayerScreenState extends State<PlayerScreen> with SingleTickerProviderSta
     return Column(
       children: [
         Expanded(
-          child: ListView.separated(
-            padding: const EdgeInsets.symmetric(vertical: 4),
-            itemCount: _history.entries.length,
-            separatorBuilder: (_, __) => const Divider(height: 1),
-            itemBuilder: (_, i) {
-              final h = _history.entries[i];
-              return ListTile(
-                dense: true,
-                leading: const Icon(Icons.history, size: 19),
-                title: Text(h.name, maxLines: 1, overflow: TextOverflow.ellipsis),
-                subtitle: Text(
-                  '${h.position > 0 ? '上次 ${_fmt(h.position)}' : '未播放'}  ·  ${h.path}',
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(fontSize: 11, color: Colors.white38),
-                ),
-                onTap: () => _openHistory(h),
-              );
-            },
+          child: Material(
+            type: MaterialType.transparency,
+            child: ListView.separated(
+              padding: const EdgeInsets.symmetric(vertical: 4),
+              itemCount: _history.entries.length,
+              separatorBuilder: (_, __) => const Divider(height: 1),
+              itemBuilder: (_, i) {
+                final h = _history.entries[i];
+                return ListTile(
+                  dense: true,
+                  leading: const Icon(Icons.history, size: 19),
+                  title: Text(h.name, maxLines: 1, overflow: TextOverflow.ellipsis),
+                  subtitle: Text(
+                    '${h.position > 0 ? '上次 ${_fmt(h.position)}' : '未播放'}  ·  ${h.path}',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(fontSize: 11, color: Colors.white38),
+                  ),
+                  onTap: () => _openHistory(h),
+                );
+              },
+            ),
           ),
         ),
         TextButton.icon(
@@ -779,7 +786,7 @@ class PlayerScreenState extends State<PlayerScreen> with SingleTickerProviderSta
         // FPS 移到右上角；全屏控制条隐藏时一并隐藏，保持沉浸感。
         if (_hasVideo && (!_fullscreen || _fsControlsVisible))
           Positioned(
-            top: _fullscreen && _fsControlsVisible ? 56 : 12,
+            top: 12,
             left: 12,
             child: Container(
               padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
@@ -797,16 +804,20 @@ class PlayerScreenState extends State<PlayerScreen> with SingleTickerProviderSta
   Widget _buildControlBar(EngineApi e) {
     final shownPos = _seekDrag >= 0 ? _seekDrag : _position;
     return Container(
+      width: double.infinity,
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
       color: const Color(0xFF1B1D25),
-      child: LayoutBuilder(builder: (context, constraints) {
-        final width = constraints.maxWidth < 680 ? 680.0 : constraints.maxWidth;
-        return SingleChildScrollView(
-          scrollDirection: Axis.horizontal,
-          child: SizedBox(
-            width: width,
-            child: Row(
-              children: [
+      child: Row(
+        children: [
+          Expanded(
+            child: LayoutBuilder(builder: (context, constraints) {
+              final width = constraints.maxWidth < 740 ? 740.0 : constraints.maxWidth;
+              return SingleChildScrollView(
+                scrollDirection: Axis.horizontal,
+                child: SizedBox(
+                  width: width,
+                  child: Row(
+                    children: [
                 IconButton(
                   tooltip: _paused ? '播放' : '暂停',
                   icon: Icon(_paused ? Icons.play_arrow : Icons.pause),
@@ -831,8 +842,7 @@ class PlayerScreenState extends State<PlayerScreen> with SingleTickerProviderSta
                   color: _sidePanelOpen ? Colors.lightBlueAccent : Colors.white54,
                   onPressed: () => _toggleSidePanel(),
                 ),
-                Flexible(
-                  child: PopupMenuButton<int>(
+                PopupMenuButton<int>(
                     tooltip: '实时超分',
                     initialValue: _srTargetW,
                     onSelected: (v) {
@@ -869,7 +879,6 @@ class PlayerScreenState extends State<PlayerScreen> with SingleTickerProviderSta
                       ),
                     ),
                   ),
-                ),
                 const SizedBox(width: 8),
                 Text('${_fmt(shownPos)} / ${_fmt(_duration)}'),
                 const SizedBox(width: 8),
@@ -888,7 +897,7 @@ class PlayerScreenState extends State<PlayerScreen> with SingleTickerProviderSta
                 const Icon(Icons.volume_up, size: 18),
                 const SizedBox(width: 4),
                 SizedBox(
-                  width: 150,
+                  width: constraints.maxWidth < 760 ? 125 : 150,
                   child: Slider(
                     value: _volume,
                     onChanged: (v) {
@@ -899,101 +908,127 @@ class PlayerScreenState extends State<PlayerScreen> with SingleTickerProviderSta
                 ),
                 const SizedBox(width: 4),
                 Text('${(_volume * 100).round()}%'),
-              ],
-            ),
-          ),
-        );
-      }),
+                  ],
+                ),
+              ),
+            );
+          }),
+        ),
+        IconButton(
+          tooltip: _fullscreen ? '退出全屏' : '全屏',
+          icon: Icon(_fullscreen ? Icons.fullscreen_exit : Icons.fullscreen),
+          color: _fullscreen ? Colors.lightBlueAccent : Colors.white54,
+          onPressed: _toggleFullscreen,
+        ),
+        ],
+      ),
     );
   }
 
   Widget _buildBeautyPanel(EngineApi e) {
     return Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Row(
-            children: [
-              const Text('磨皮'),
-              Expanded(
-                child: Slider(
-                  value: _smooth,
-                  onChanged: (v) {
-                    setState(() => _smooth = v);
-                    e.setBeauty(v, _white);
-                  },
-                  onChangeEnd: (_) => _previewDirty = true,
-                ),
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            const SizedBox(width: 34, child: Text('磨皮')),
+            Expanded(
+              child: Slider(
+                value: _smooth,
+                onChanged: (v) {
+                  setState(() => _smooth = v);
+                  e.setBeauty(v, _white);
+                },
+                onChangeEnd: (_) => _previewDirty = true,
               ),
-              Text('${(_smooth * 100).round()}%'),
-              const SizedBox(width: 16),
-              const Text('美白'),
-              Expanded(
-                child: Slider(
-                  value: _white,
-                  onChanged: (v) {
-                    setState(() => _white = v);
-                    e.setBeauty(_smooth, v);
-                  },
-                  onChangeEnd: (_) => _previewDirty = true,
-                ),
+            ),
+            SizedBox(
+              width: 40,
+              child: Text('${(_smooth * 100).round()}%', textAlign: TextAlign.right),
+            ),
+          ],
+        ),
+        Row(
+          children: [
+            const SizedBox(width: 34, child: Text('美白')),
+            Expanded(
+              child: Slider(
+                value: _white,
+                onChanged: (v) {
+                  setState(() => _white = v);
+                  e.setBeauty(_smooth, v);
+                },
+                onChangeEnd: (_) => _previewDirty = true,
               ),
-              Text('${(_white * 100).round()}%'),
-            ],
+            ),
+            SizedBox(
+              width: 40,
+              child: Text('${(_white * 100).round()}%', textAlign: TextAlign.right),
+            ),
+          ],
+        ),
+        const SizedBox(height: 10),
+        const Text('滤镜', style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold)),
+        const SizedBox(height: 6),
+        GridView.builder(
+          shrinkWrap: true,
+          physics: const NeverScrollableScrollPhysics(),
+          padding: EdgeInsets.zero,
+          gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+            crossAxisCount: 3,
+            mainAxisSpacing: 8,
+            crossAxisSpacing: 8,
+            childAspectRatio: 1.05,
           ),
-          const SizedBox(height: 4),
-          SingleChildScrollView(
-            scrollDirection: Axis.horizontal,
-            child: Row(
+          itemCount: _filters.length,
+          itemBuilder: (_, i) {
+            final preview = i < _previewImgs.length ? _previewImgs[i] : null;
+            return Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                const Text('滤镜'),
-                const SizedBox(width: 8),
-                ...List.generate(_filters.length, (i) {
-                  final preview = i < _previewImgs.length ? _previewImgs[i] : null;
-                  return Padding(
-                    padding: const EdgeInsets.only(right: 8),
-                    child: InkWell(
-                      borderRadius: BorderRadius.circular(8),
-                      onTap: () {
-                        setState(() => _filterIdx = i);
-                        e.setFilter(i, 1.0);
-                      },
-                      child: Column(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Container(
-                            width: 96,
-                            height: 54,
-                            decoration: BoxDecoration(
-                              borderRadius: BorderRadius.circular(8),
-                              border: Border.all(
-                                color: _filterIdx == i
-                                    ? Theme.of(context).colorScheme.primary
-                                    : Colors.white24,
-                                width: 2,
-                              ),
-                            ),
-                            child: ClipRRect(
-                              borderRadius: BorderRadius.circular(6),
-                              child: preview != null
-                                  ? RawImage(
-                                      image: preview,
-                                      fit: BoxFit.cover,
-                                      filterQuality: FilterQuality.low,
-                                    )
-                                  : const ColoredBox(color: Color(0xFF1E2029)),
-                            ),
-                          ),
-                          const SizedBox(height: 2),
-                          Text(_filters[i], style: const TextStyle(fontSize: 11)),
-                        ],
+                Expanded(
+                  child: InkWell(
+                    borderRadius: BorderRadius.circular(8),
+                    onTap: () {
+                      setState(() => _filterIdx = i);
+                      e.setFilter(i, 1.0);
+                    },
+                    child: Container(
+                      decoration: BoxDecoration(
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(
+                          color: _filterIdx == i
+                              ? Theme.of(context).colorScheme.primary
+                              : Colors.white24,
+                          width: 2,
+                        ),
+                      ),
+                      child: ClipRRect(
+                        borderRadius: BorderRadius.circular(6),
+                        child: preview != null
+                            ? RawImage(
+                                image: preview,
+                                fit: BoxFit.cover,
+                                filterQuality: FilterQuality.low,
+                              )
+                            : const ColoredBox(color: Color(0xFF1E2029)),
                       ),
                     ),
-                  );
-                }),
+                  ),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  _filters[i],
+                  textAlign: TextAlign.center,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(fontSize: 11),
+                ),
               ],
-            ),
-          ),
-        ],
-      );
+            );
+          },
+        ),
+      ],
+    );
   }
 }

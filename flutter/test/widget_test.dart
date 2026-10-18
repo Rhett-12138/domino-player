@@ -419,18 +419,16 @@ void main() {
     await _dispose(tester);
   });
 
-  testWidgets('播放页：openPath 切换视频并同步文件名', (WidgetTester tester) async {
+  testWidgets('顶部栏打开影片并显示文件名', (WidgetTester tester) async {
     final engine = FakeEngine();
-    final key = GlobalKey<PlayerScreenState>();
-    await tester.pumpWidget(MaterialApp(
-      home: PlayerScreen(key: key, engine: engine),
-    ));
+    await tester.pumpWidget(MaterialApp(home: HomeScreen(engine: engine)));
     await tester.pump();
 
-    key.currentState!.openPath('C:/dir/movie.mp4');
+    await tester.tap(find.byTooltip('打开文件'));
     await tester.pump();
-    expect(engine.lastOpened, 'C:/dir/movie.mp4');
-    expect(find.text('movie.mp4'), findsOneWidget); // 控制条显示文件名（非完整路径）
+    expect(engine.lastOpened, r'C:\picked\movie.mp4');
+    expect(find.text('movie.mp4'), findsOneWidget);
+    expect(tester.getTopLeft(find.text('Domino')).dx, greaterThan(700));
     await _dispose(tester);
   });
 
@@ -470,16 +468,20 @@ void main() {
 
   testWidgets('播放页：打开的影片进入播放历史侧栏', (WidgetTester tester) async {
     final engine = FakeEngine();
-    await tester.pumpWidget(MaterialApp(home: PlayerScreen(engine: engine)));
+    await tester.pumpWidget(MaterialApp(home: HomeScreen(engine: engine)));
     await tester.pump();
     await tester.tap(find.byTooltip('打开文件'));
     await tester.pump();
 
     await tester.tap(find.byIcon(Icons.tune));
-    await tester.pump(const Duration(milliseconds: 300));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+    expect(tester.getTopLeft(find.text('选项')).dx, greaterThan(300));
+    expect(tester.getTopLeft(find.text('选项')).dx, lessThan(460));
     await tester.tap(find.text('播放历史'));
     await tester.pump();
     expect(find.text('movie.mp4'), findsWidgets);
+    expect(find.textContaining(r'C:\picked\movie.mp4'), findsOneWidget);
     await _dispose(tester);
   });
 
@@ -489,11 +491,31 @@ void main() {
     await tester.pump();
 
     await tester.tap(find.byIcon(Icons.tune));
-    await tester.pump(const Duration(milliseconds: 300));
-    final panel = tester.widget<AnimatedPositioned>(find.byType(AnimatedPositioned));
-    expect(panel.right, 0);
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+    expect(tester.getTopLeft(find.text('选项')).dx, greaterThan(300));
+    expect(tester.getTopLeft(find.text('选项')).dx, lessThan(460));
     expect(find.text('美化'), findsOneWidget);
     expect(find.text('播放历史'), findsOneWidget);
+    await _dispose(tester);
+  });
+
+  testWidgets('播放页：美化面板滑杆分行、滤镜三列', (WidgetTester tester) async {
+    final engine = FakeEngine();
+    await tester.pumpWidget(MaterialApp(home: PlayerScreen(engine: engine)));
+    await tester.pump();
+    await tester.tap(find.byIcon(Icons.tune));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+
+    expect(find.text('磨皮'), findsOneWidget);
+    expect(find.text('美白'), findsOneWidget);
+    expect(find.text('滤镜'), findsOneWidget);
+    expect(tester.getTopLeft(find.text('磨皮')).dy,
+        isNot(tester.getTopLeft(find.text('美白')).dy));
+    final grid = tester.widget<GridView>(find.byType(GridView));
+    final delegate = grid.gridDelegate as SliverGridDelegateWithFixedCrossAxisCount;
+    expect(delegate.crossAxisCount, 3);
     await _dispose(tester);
   });
 
@@ -501,6 +523,7 @@ void main() {
     final engine = FakeEngine();
     await tester.pumpWidget(MaterialApp(home: PlayerScreen(engine: engine)));
     await tester.pump();
+    expect(tester.getCenter(find.byIcon(Icons.fullscreen)).dx, greaterThan(700));
 
     await tester.tap(find.byIcon(Icons.fullscreen));
     await tester.pump();
@@ -515,7 +538,7 @@ void main() {
 
   testWidgets('播放页：点「打开」弹选择框并播放选中文件', (WidgetTester tester) async {
     final engine = FakeEngine();
-    await tester.pumpWidget(MaterialApp(home: PlayerScreen(engine: engine)));
+    await tester.pumpWidget(MaterialApp(home: HomeScreen(engine: engine)));
     await tester.pump();
     expect(engine.openCalls, 0); // 启动不自动打开
 
@@ -523,13 +546,13 @@ void main() {
     await tester.pump();
     expect(engine.lastOpened, r'C:\picked\movie.mp4'); // 选择了文件 → 播放
     expect(engine.openCalls, 1);
-    expect(find.text('movie.mp4'), findsOneWidget); // 控制条显示文件名
+    expect(find.text('movie.mp4'), findsOneWidget); // 顶部栏显示文件名
     await _dispose(tester);
   });
 
   testWidgets('播放页：取消选择框不做任何事', (WidgetTester tester) async {
     final engine = FakeEngine()..dialogResult = null;
-    await tester.pumpWidget(MaterialApp(home: PlayerScreen(engine: engine)));
+    await tester.pumpWidget(MaterialApp(home: HomeScreen(engine: engine)));
     await tester.pump();
 
     await tester.tap(find.byTooltip('打开文件'));
@@ -545,6 +568,47 @@ void main() {
     await tester.pumpWidget(MaterialApp(home: PlayerScreen(engine: engine)));
     await tester.pump();
     expect(tester.takeException(), isNull);
+    expect(tester.getSize(find.byType(Slider).last).width, 125);
+    await _dispose(tester);
+  });
+
+  testWidgets('播放页：宽窗口音量滑杆保持 150', (WidgetTester tester) async {
+    await tester.binding.setSurfaceSize(const Size(1280, 720));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    final engine = FakeEngine();
+    await tester.pumpWidget(MaterialApp(home: PlayerScreen(engine: engine)));
+    await tester.pump();
+    expect(tester.getSize(find.byType(Slider).last).width, 150);
+    await _dispose(tester);
+  });
+
+  testWidgets('播放页：窄窗口全屏按钮仍可见可点', (WidgetTester tester) async {
+    await tester.binding.setSurfaceSize(const Size(640, 480));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    final engine = FakeEngine();
+    await tester.pumpWidget(MaterialApp(home: PlayerScreen(engine: engine)));
+    await tester.pump();
+
+    final center = tester.getCenter(find.byIcon(Icons.fullscreen));
+    expect(center.dx, lessThan(640));
+    await tester.tap(find.byIcon(Icons.fullscreen));
+    await tester.pump();
+    expect(engine.fullscreenState, true);
+    await _dispose(tester);
+  });
+
+  testWidgets('顶部栏：窄窗口长文件名不溢出', (WidgetTester tester) async {
+    await tester.binding.setSurfaceSize(const Size(640, 480));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    final engine = FakeEngine()
+      ..dialogResult = r'C:\picked\a_very_long_movie_file_name_for_narrow_window.mp4';
+    await tester.pumpWidget(MaterialApp(home: HomeScreen(engine: engine)));
+    await tester.pump();
+
+    await tester.tap(find.byTooltip('打开文件'));
+    await tester.pump();
+    expect(tester.takeException(), isNull);
+    expect(find.textContaining('a_very_long_movie'), findsOneWidget);
     await _dispose(tester);
   });
 
@@ -586,11 +650,12 @@ void main() {
 
   testWidgets('播放页：打开失败显示 SnackBar', (WidgetTester tester) async {
     final engine = FakeEngine()..openOk = false;
-    await tester.pumpWidget(MaterialApp(home: PlayerScreen(engine: engine)));
+    await tester.pumpWidget(MaterialApp(home: HomeScreen(engine: engine)));
     await tester.pump();
     await tester.tap(find.byTooltip('打开文件'));
     await tester.pump();
     expect(find.text('打开失败：文件不存在或无法解码'), findsOneWidget);
+    expect(find.text('未打开文件'), findsOneWidget);
     await _dispose(tester);
   });
 
