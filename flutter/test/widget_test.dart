@@ -428,6 +428,7 @@ void main() {
     await tester.pump();
     expect(engine.lastOpened, r'C:\picked\movie.mp4');
     expect(find.text('movie.mp4'), findsOneWidget);
+    expect(find.text('30.0 FPS'), findsOneWidget);
     expect(tester.getTopLeft(find.text('Domino')).dx, greaterThan(700));
     await _dispose(tester);
   });
