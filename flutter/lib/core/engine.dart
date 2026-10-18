@@ -47,8 +47,9 @@ abstract class EngineApi {
   double get fps;
 
   // ---- 任务中心 ----
-  /// quality: 0=快速 1=平衡 2=高质量（默认）；content: 0=真人 1=动画
-  int taskCreate(String source, int targetW, String desc, {int quality = 2, int content = 0});
+  /// quality: 0=快速 1=平衡 2=高质量（输入策略）
+  /// model: 0=真人标准 1=动画标准 2=真人高质量 3=动画高质量
+  int taskCreate(String source, int targetW, String desc, {int quality = 2, int model = 0});
   void taskStart(int idx);
   void taskStop(int idx);
   void taskRemove(int idx);
@@ -160,10 +161,10 @@ class DominoEngine implements EngineApi {
   bool setFullscreen(bool on) => _setFullscreen(_h, on ? 1 : 0) == 1;
 
   // ---- 任务中心 ----
-  int taskCreate(String source, int targetW, String desc, {int quality = 2, int content = 0}) {
+  int taskCreate(String source, int targetW, String desc, {int quality = 2, int model = 0}) {
     final s = source.toNativeUtf8();
     final d = desc.toNativeUtf8();
-    final idx = _taskCreate(_h, s, targetW, quality, content, d);
+    final idx = _taskCreate(_h, s, targetW, quality, model, d);
     calloc.free(s);
     calloc.free(d);
     return idx;

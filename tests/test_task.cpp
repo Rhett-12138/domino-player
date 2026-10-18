@@ -256,7 +256,7 @@ TEST(TaskQualityPersists) {
   TaskCenter tc;
   tc.init(root);
   Task* t = tc.create(assetPath("test_av.mp4").c_str(), 1920,
-                      SRInputQuality::Balanced, SRModel::Anime);
+                      SRInputQuality::Balanced, SRModel::AnimeHQ);
   EXPECT_TRUE(t != nullptr);
   tc.save(t);
 
@@ -267,7 +267,7 @@ TEST(TaskQualityPersists) {
   EXPECT_TRUE(loaded != nullptr);
   if (loaded) {
     EXPECT_TRUE(loaded->srInput == SRInputQuality::Balanced);
-    EXPECT_TRUE(loaded->model == SRModel::Anime);
+    EXPECT_TRUE(loaded->model == SRModel::AnimeHQ);
   }
 }
 

@@ -18,7 +18,7 @@ class FakeEngine implements EngineApi {
   String? lastOpened;
   int createCalls = 0;
   int lastTaskQuality = 2;
-  int lastTaskContent = 0;
+  int lastTaskModel = 0;
   String? dialogResult = r'C:\picked\movie.mp4';
 
   final List<_FakeTask> tasks = [];
@@ -129,11 +129,11 @@ class FakeEngine implements EngineApi {
   double get fps => 30;
 
   @override
-  int taskCreate(String source, int targetW, String desc, {int quality = 2, int content = 0}) {
+  int taskCreate(String source, int targetW, String desc, {int quality = 2, int model = 0}) {
     createCalls++;
     lastTaskQuality = quality;
-    lastTaskContent = content;
-    tasks.add(_FakeTask(status: 0, total: 100, temp: 'C:/out/${tasks.length}.mp4', model: content));
+    lastTaskModel = model;
+    tasks.add(_FakeTask(status: 0, total: 100, temp: 'C:/out/${tasks.length}.mp4', model: model));
     return tasks.length - 1;
   }
 
@@ -239,7 +239,7 @@ void main() {
     await tester.pump();
     expect(engine.createCalls, 1);
     expect(engine.lastTaskQuality, 2);
-    expect(engine.lastTaskContent, 0);
+    expect(engine.lastTaskModel, 0);
     expect(engine.tasks.length, 1);
     expect(engine.tasks.first.status, 1); // 自动启动
     expect(find.text('video0.mp4'), findsOneWidget);
@@ -545,6 +545,27 @@ void main() {
     expect(find.text('快速'), findsOneWidget);
     expect(find.text('平衡'), findsOneWidget);
     expect(find.text('高质量'), findsWidgets);
+    await _dispose(tester);
+  });
+
+  testWidgets('Task center: high quality model option is passed to engine', (WidgetTester tester) async {
+    final engine = FakeEngine();
+    await tester.pumpWidget(MaterialApp(
+      home: TaskCenterScreen(engine: engine, onPlay: (_) {}),
+    ));
+    await tester.pump();
+    await tester.tap(find.byIcon(Icons.add));
+    await tester.pump();
+    final dropdowns = find.byType(DropdownButton<int>);
+    expect(dropdowns, findsNWidgets(4));
+    await tester.tap(dropdowns.at(3)); // 模型档位
+    await tester.pump();
+    await tester.tap(find.text('高质量').last);
+    await tester.pump();
+    await tester.tap(find.text('开始任务'));
+    await tester.pump();
+    expect(engine.createCalls, 1);
+    expect(engine.lastTaskModel, 2); // 真人 + 高质量
     await _dispose(tester);
   });
 

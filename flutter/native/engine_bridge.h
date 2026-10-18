@@ -66,9 +66,9 @@ DOMINO_EXPORT int    domino_frame_h(void* h);
 DOMINO_EXPORT int    domino_task_create(void* h, const char* source, int targetW, const char* desc);
 // 带质量档：quality 0=Fast 1=Balanced 2=FullSource；旧入口默认 FullSource
 DOMINO_EXPORT int    domino_task_create_ex(void* h, const char* source, int targetW, int quality, const char* desc);
-// 质量 + 模型：model 0=真人/实拍（General x4） 1=动画（animevideov3 x4）
+// 质量 + 模型：0=真人标准 1=动画标准 2=真人高质量 3=动画高质量
 DOMINO_EXPORT int    domino_task_create_ex2(void* h, const char* source, int targetW, int quality, int model, const char* desc);
-DOMINO_EXPORT int    domino_task_model(void* h, int idx);   // 0=真人 1=动画
+DOMINO_EXPORT int    domino_task_model(void* h, int idx);   // 0=真人标准 1=动画标准 2=真人高质量 3=动画高质量
 DOMINO_EXPORT void   domino_task_start(void* h, int idx);    // 开始/继续（有断点自动续编）
 DOMINO_EXPORT void   domino_task_stop(void* h, int idx);     // 暂停
 DOMINO_EXPORT void   domino_task_remove(void* h, int idx);   // 删除

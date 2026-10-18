@@ -31,11 +31,12 @@
 - [x] 离线 SR 质量优先（2026-10，见 `docs/plan-offline-sr-quality-2026-10.md`）：离线默认 FullSource 输入（不再 target/4 预降采样），4x 后用 Lanczos 缩到目标；CRF18/preset slow。720p→1080 FullSource 15.3s/2s，1080p→2K FullSource 32.6s/2s
 - [x] 任务中心质量下拉（2026-10）：快速/平衡/高质量，默认高质量；质量档写入 `meta.tsv`，续编沿用；旧任务缺字段按 Fast 兼容
 - [x] 真人/动画模型选择（2026-10，见 `docs/plan-model-library-2026-10.md`）：复用现有 General x4 / animevideov3 x4；内容类型写入 meta，任务卡片显示模型；动画模型实测约快 1.3–1.4x
+- [x] 高质量模型档（2026-10）：x4plus（真人，33.4MB）/ x4plus-anime（动画，8.9MB）接入；输入上限 960；模型档位写入 meta、续编沿用；旧任务默认标准
 
 ### 进行中 / 待办（按优先级）
 1. [ ] **任务中心端到端人工验收**：建任务 → 编码 → 进度 → 断点续编 → 边播放（自动化难驱动 Flutter 控件，需人工过一遍）
 2. [ ] **2K/4K 实时 SR 优化**：1080p 已 29.6fps；2K≈15、4K≈5.9fps。自动降档已兜底（4K/2K→1080p，仍慢→关闭）；真正 2K/4K 30fps 仍需轻量模型/推理优化，零拷贝单项收益有限
-3. [ ] **模型库第二层**：评估/加入 RealESRGAN x4plus（真人）与 x4plus_anime_6B（动画）高质量档，并做真人/动画/文字盲测（见 `docs/plan-model-library-2026-10.md`）
+3. [ ] **高质量模型盲测/模型包**：验证 x4plus / x4plus-anime 在真人、动画、文字上的收益；若继续增加模型，做可选模型包/下载（见 `docs/plan-model-library-2026-10.md`）
 4. [ ] **2x/3x 模型灵活选择**：分析见 `docs/plan-sr-model-scales-2026-10.md`；2x 适合 1080→4K/720→2K，3x 适合 720→4K；1.5x 无原生模型，建议 2x+缩放
 5. [ ] **离线 SR 大图优化**：FullSource 1080p→4K 中间帧 7680×4320、峰值约 1.9GB；评估 tile + overlap
 6. [ ] 打包分发：安装包/绿色版、图标、关于页

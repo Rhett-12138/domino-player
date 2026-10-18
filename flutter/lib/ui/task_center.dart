@@ -26,7 +26,7 @@ class _TaskCenterScreenState extends State<TaskCenterScreen> {
   static const _srQualities = ['快速', '平衡', '高质量'];
   static const _srQuality = [0, 1, 2];
   static const _contents = ['真人/实拍', '动画'];
-  static const _content = [0, 1];
+  static const _modelTiers = ['标准', '高质量'];
 
   int _count = 0;
   List<int> _lastStatus = const [];
@@ -37,6 +37,18 @@ class _TaskCenterScreenState extends State<TaskCenterScreen> {
   int _targetIdx = 1;
   int _qualityIdx = 2;
   int _contentIdx = 0;
+  int _tierIdx = 0;
+
+  int get _modelIndex => (_contentIdx == 1 ? 1 : 0) + (_tierIdx == 1 ? 2 : 0);
+
+  static String _modelLabel(int model) {
+    switch (model) {
+      case 1: return '动画 · animevideov3 x4';
+      case 2: return '真人 · x4plus';
+      case 3: return '动画 · x4plus-anime';
+      default: return '真人 · General x4';
+    }
+  }
   Timer? _timer;
 
   @override
@@ -89,7 +101,7 @@ class _TaskCenterScreenState extends State<TaskCenterScreen> {
   void _newTask() {
     final ok = widget.engine.taskCreate(
         _srcCtrl.text, _targetW[_targetIdx], _descCtrl.text,
-        quality: _srQuality[_qualityIdx], content: _content[_contentIdx]);
+        quality: _srQuality[_qualityIdx], model: _modelIndex);
     if (ok >= 0) {
       widget.engine.taskStart(ok);
       setState(() => _showNew = false);
@@ -242,11 +254,21 @@ class _TaskCenterScreenState extends State<TaskCenterScreen> {
                           (i) => DropdownMenuItem(value: i, child: Text(_contents[i]))),
                       onChanged: (v) => setState(() => _contentIdx = v ?? 0),
                     ),
+                    const SizedBox(width: 20),
+                    const Text('模型档位'),
                     const SizedBox(width: 8),
-                    const Text('动画使用 animevideov3 模型',
-                        style: TextStyle(fontSize: 11, color: Colors.white38)),
+                    DropdownButton<int>(
+                      value: _tierIdx,
+                      items: List.generate(
+                          _modelTiers.length,
+                          (i) => DropdownMenuItem(value: i, child: Text(_modelTiers[i]))),
+                      onChanged: (v) => setState(() => _tierIdx = v ?? 0),
+                    ),
                   ],
                 ),
+                const SizedBox(height: 4),
+                const Text('高质量：真人 x4plus / 动画 x4plus-anime，速度更慢',
+                    style: TextStyle(fontSize: 11, color: Colors.white38)),
                 const SizedBox(height: 8),
                 TextField(
                   controller: _descCtrl,
@@ -296,7 +318,7 @@ class _TaskCenterScreenState extends State<TaskCenterScreen> {
               ],
             ),
             const SizedBox(height: 2),
-            Text(model == 1 ? '动画 · animevideov3 x4' : '真人 · General x4',
+            Text(_modelLabel(model),
                 style: const TextStyle(fontSize: 11, color: Colors.white38)),
             const SizedBox(height: 8),
             LinearProgressIndicator(value: progress, minHeight: 8, borderRadius: BorderRadius.circular(4)),

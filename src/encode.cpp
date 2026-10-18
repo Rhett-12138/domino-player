@@ -94,6 +94,9 @@ bool encodeOffline(const char* srcPath, const char* outPath, int targetW, const 
   int outW = needSR ? targetW : srcW;
   int outH = needSR ? (int)(((size_t)srcH * targetW / srcW) & ~1) : srcH;
   int inW = needSR ? chooseSRInputWidth(srcW, targetW, opts.srInput) : srcW;
+  // 高质量模型（x4plus / x4plus-anime）显存/中间特征更大：实测 1280 输入
+  // 会失败，960（4x=3840）稳定；限制上限，避免整任务回退源帧。
+  if (needSR && srModelIsHQ(opts.model) && inW > 960) inW = 960;
   if (inW > 1) inW &= ~1;   // 模型输入宽保持偶数
   const int inH = needSR ? (int)(((int64_t)srcH * inW / srcW) & ~1) : srcH;
   const int encInW = needSR ? inW * 4 : srcW;

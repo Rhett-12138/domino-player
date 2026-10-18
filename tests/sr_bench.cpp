@@ -39,6 +39,7 @@ int main(int argc, char** argv) {
   const std::string src = assets + "/test_long.mp4";
   const std::string offlineSrc = argc > 2 ? argv[2] : assets + "/test_av.mp4";
   const int offlineTarget = argc > 3 ? atoi(argv[3]) : 1920;
+  const int offlineModel = argc > 4 ? atoi(argv[4]) : 0;
   Config cfg = Config::defaults();
 
   // 1) 直接测 SR 推理：720p 源 → 目标宽 / 4 的模型输入
@@ -85,6 +86,7 @@ int main(int argc, char** argv) {
     EncodeOptions eo;
     eo.verbose = false;
     eo.modelBase = cfg.modelBase;
+    eo.model = (SRModel)offlineModel;
     eo.srInput = m.q;
     std::string out = (std::filesystem::temp_directory_path() /
       ("domino_offline_" + std::string(m.name) + ".mp4")).string();

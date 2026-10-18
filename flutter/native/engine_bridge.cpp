@@ -389,7 +389,8 @@ int domino_task_create_ex2(void* h, const char* source, int targetW, int quality
   SRInputQuality mode = q == 0 ? SRInputQuality::Fast
                     : q == 1 ? SRInputQuality::Balanced
                              : SRInputQuality::FullSource;
-  SRModel sm = model == 1 ? SRModel::Anime : SRModel::Realistic;
+  int mi = model < 0 ? 0 : (model > 3 ? 3 : model);
+  SRModel sm = static_cast<SRModel>(mi);
   Task* t = e->tasks->create(source, targetW, mode, sm);
   if (!t) return -1;
   if (desc) t->description = desc;
@@ -398,7 +399,7 @@ int domino_task_create_ex2(void* h, const char* source, int targetW, int quality
 }
 int domino_task_model(void* h, int idx) {
   Task* t = TaskAt((EngineHandle*)h, idx);
-  return (t && t->model == SRModel::Anime) ? 1 : 0;
+  return t ? (int)t->model : 0;
 }
 void domino_task_start(void* h, int idx) {
   EngineHandle* e = (EngineHandle*)h;

@@ -24,6 +24,15 @@ static std::string tempOut(const char* name) {
 }
 
 // 离线质量档：FullSource 不应把 1080p 源先缩到 640/960
+TEST(SRModelRegistry) {
+  EXPECT_STREQ(srModelParamName(SRModel::Realistic), "RealESRGAN_General_x4_v3.param");
+  EXPECT_STREQ(srModelParamName(SRModel::Anime), "realesr-animevideov3-x4.param");
+  EXPECT_STREQ(srModelParamName(SRModel::RealisticHQ), "realesrgan-x4plus.param");
+  EXPECT_STREQ(srModelParamName(SRModel::AnimeHQ), "realesrgan-x4plus-anime.param");
+  EXPECT_TRUE(srModelFromId("realistic_hq") == SRModel::RealisticHQ);
+  EXPECT_TRUE(srModelFromId("anime_hq") == SRModel::AnimeHQ);
+}
+
 TEST(EncodeSRInputWidthQuality) {
   EXPECT_EQ(chooseSRInputWidth(1920, 2560, SRInputQuality::Fast), 640);
   EXPECT_EQ(chooseSRInputWidth(1920, 2560, SRInputQuality::Balanced), 1440);
