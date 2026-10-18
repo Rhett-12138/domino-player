@@ -4,7 +4,7 @@
 
 - **播放**：播放/暂停/seek/音量/循环、**GPU 着色器磨皮/美白/滤镜**（D3D11 HLSL，CPU 自动回退）、滤镜缩略图、动态宽高比、FPS 角标、系统文件选择框。
 - **实时超分（实验性）**：播放页手动切换关闭/1080p/2K/4K；解码/SR 已移到原生工作线程，720p 源 1080p 约 29 FPS，2K/4K 分别约 15/6 FPS。2K/4K 持续跟不上音频时会**自动降到 1080p**（仍慢则关闭 SR），手动选档可重试（详见 `docs/plan-sr-worker-2026-10.md`、`docs/plan-auto-degrade-2026-10.md`）。
-- **超分任务中心**：新建/开始/暂停/断点续编/边播放（边编码边看）/删除，任务持久化。离线默认 **FullSource 质量优先**：保留源分辨率送 4x 模型，再 Lanczos 缩到目标，编码 CRF18；比实时路径更慢但细节更好（见 `docs/plan-offline-sr-quality-2026-10.md`）。
+- **超分任务中心**：新建/开始/暂停/断点续编/边播放（边编码边看）/删除，任务持久化。新建任务可选 **快速/平衡/高质量**（默认高质量 FullSource），质量档随任务保存并在续编时沿用。高质量保留源分辨率送 4x 模型，再 Lanczos 缩到目标，编码 CRF18；比实时路径更慢但细节更好（见 `docs/plan-offline-sr-quality-2026-10.md`）。
 - **引擎可移植**：`domino_core` 不含任何平台依赖（视频经 `IFrameOutput`、音频经 `AudioSink`），任意前端可链接（Windows 现用 WASAPI + Flutter 纹理）。
 
 架构、约束与完成定义（DoD）见 [`AGENTS.md`](AGENTS.md)；当前进度与里程碑见 [`docs/roadmap.md`](docs/roadmap.md)。

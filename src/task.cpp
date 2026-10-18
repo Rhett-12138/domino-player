@@ -19,6 +19,15 @@ static std::string taskMetaPath(const std::string& folder) {
   return folder + "/meta.tsv";
 }
 
+static SRInputQuality qualityFromInt(int v) {
+  switch (v) {
+    case 0: return SRInputQuality::Fast;
+    case 1: return SRInputQuality::Balanced;
+    case 2: return SRInputQuality::FullSource;
+    default: return SRInputQuality::Fast;   // 旧 meta 没有质量字段：沿用旧 target/4 行为
+  }
+}
+
 static bool pathExists(const std::string& p) {
   std::error_code ec;
   return std::filesystem::exists(p, ec);
@@ -139,6 +148,13 @@ void TaskCenter::init(const std::string& root) {
         tp->resumeTime = rt;
         tp->startFrame = sfr;
         tp->description = desc;
+        // 质量档在第二行；旧 meta 没有该行时沿用旧 target/4
+        char extra[256];
+        int qi = -1;
+        if (fgets(extra, sizeof(extra), f)) {
+          if (sscanf(extra, "sr_input=%d", &qi) != 1) qi = -1;
+        }
+        tp->srInput = qualityFromInt(qi);
         tasks_.push_back(std::move(tp));
       }
     }
@@ -158,14 +174,16 @@ void TaskCenter::save(Task* t) {
   fprintf(f, "%s\t%s\t%d\t%d\t%lld\t%lf\t%lld\t%lld\t%lf\t%lld\t%s\n",
     t->id.c_str(), t->source.c_str(), t->targetW, t->status.load(),
     t->frames, t->fps, t->createdAt, t->totalFrames, t->resumeTime, t->startFrame, t->description.c_str());
+  fprintf(f, "sr_input=%d\n", (int)t->srInput);
   fclose(f);
 }
 
-Task* TaskCenter::create(const char* source, int targetW) {
+Task* TaskCenter::create(const char* source, int targetW, SRInputQuality quality) {
   auto tp = std::make_unique<Task>();
   tp->id = nowId();
   tp->source = source;
   tp->targetW = targetW;
+  tp->srInput = quality;
   tp->folder = dir_ + "/" + tp->id;
   tp->temp = tp->folder + "/task.mp4";
   tp->createdAt = (long long)time(nullptr);
@@ -192,6 +210,7 @@ void TaskCenter::start(Task* t) {
   eo.preview = previewFn_;
   eo.previewUserdata = previewUd_;
   eo.modelBase = modelBase_.empty() ? Config::defaults().modelBase : modelBase_;
+  eo.srInput = t->srInput;
   std::string partPath = t->temp + ".resume";
   std::string tmpPath = t->temp + ".merged";
   eo.startTime = t->resumeTime > 0.01 ? t->resumeTime : 0.0;

@@ -377,9 +377,16 @@ static void CopyOut(const std::string& s, char* buf, int cap) {
 }
 
 int domino_task_create(void* h, const char* source, int targetW, const char* desc) {
+  return domino_task_create_ex(h, source, targetW, 2, desc);
+}
+int domino_task_create_ex(void* h, const char* source, int targetW, int quality, const char* desc) {
   EngineHandle* e = (EngineHandle*)h;
   if (!e || !e->tasks || !source) return -1;
-  Task* t = e->tasks->create(source, targetW);
+  int q = quality < 0 ? 0 : (quality > 2 ? 2 : quality);
+  SRInputQuality mode = q == 0 ? SRInputQuality::Fast
+                    : q == 1 ? SRInputQuality::Balanced
+                             : SRInputQuality::FullSource;
+  Task* t = e->tasks->create(source, targetW, mode);
   if (!t) return -1;
   if (desc) t->description = desc;
   e->tasks->save(t);

@@ -23,6 +23,8 @@ class TaskCenterScreen extends StatefulWidget {
 class _TaskCenterScreenState extends State<TaskCenterScreen> {
   static const _targets = ['720p', '1080p', '2K', '4K'];
   static const _targetW = [1280, 1920, 2560, 3840];
+  static const _srQualities = ['快速', '平衡', '高质量'];
+  static const _srQuality = [0, 1, 2];
 
   int _count = 0;
   List<int> _lastStatus = const [];
@@ -31,6 +33,7 @@ class _TaskCenterScreenState extends State<TaskCenterScreen> {
   final _srcCtrl = TextEditingController(); // 源路径（默认空，由「浏览」或手动填写）
   final _descCtrl = TextEditingController();
   int _targetIdx = 1;
+  int _qualityIdx = 2;
   Timer? _timer;
 
   @override
@@ -82,7 +85,8 @@ class _TaskCenterScreenState extends State<TaskCenterScreen> {
 
   void _newTask() {
     final ok = widget.engine.taskCreate(
-        _srcCtrl.text, _targetW[_targetIdx], _descCtrl.text);
+        _srcCtrl.text, _targetW[_targetIdx], _descCtrl.text,
+        quality: _srQuality[_qualityIdx]);
     if (ok >= 0) {
       widget.engine.taskStart(ok);
       setState(() => _showNew = false);
@@ -202,14 +206,24 @@ class _TaskCenterScreenState extends State<TaskCenterScreen> {
                 const SizedBox(height: 8),
                 Row(
                   children: [
-                    const Text('输出质量'),
-                    const SizedBox(width: 12),
+                    const Text('输出分辨率'),
+                    const SizedBox(width: 8),
                     DropdownButton<int>(
                       value: _targetIdx,
                       items: List.generate(
                           _targets.length,
                           (i) => DropdownMenuItem(value: i, child: Text(_targets[i]))),
                       onChanged: (v) => setState(() => _targetIdx = v ?? 1),
+                    ),
+                    const SizedBox(width: 20),
+                    const Text('超分质量'),
+                    const SizedBox(width: 8),
+                    DropdownButton<int>(
+                      value: _qualityIdx,
+                      items: List.generate(
+                          _srQualities.length,
+                          (i) => DropdownMenuItem(value: i, child: Text(_srQualities[i]))),
+                      onChanged: (v) => setState(() => _qualityIdx = v ?? 2),
                     ),
                   ],
                 ),

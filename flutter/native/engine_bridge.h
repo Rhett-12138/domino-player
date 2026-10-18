@@ -64,6 +64,8 @@ DOMINO_EXPORT int    domino_frame_h(void* h);
 // ---- 任务中心（离线超分） ----
 // 创建任务，返回任务索引（-1 失败）；source=源视频，targetW=输出宽，desc=备注
 DOMINO_EXPORT int    domino_task_create(void* h, const char* source, int targetW, const char* desc);
+// 带质量档：quality 0=Fast 1=Balanced 2=FullSource；旧入口默认 FullSource
+DOMINO_EXPORT int    domino_task_create_ex(void* h, const char* source, int targetW, int quality, const char* desc);
 DOMINO_EXPORT void   domino_task_start(void* h, int idx);    // 开始/继续（有断点自动续编）
 DOMINO_EXPORT void   domino_task_stop(void* h, int idx);     // 暂停
 DOMINO_EXPORT void   domino_task_remove(void* h, int idx);   // 删除

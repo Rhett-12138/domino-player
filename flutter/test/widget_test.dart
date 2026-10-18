@@ -17,6 +17,7 @@ class FakeEngine implements EngineApi {
   int pauseCalls = 0;
   String? lastOpened;
   int createCalls = 0;
+  int lastTaskQuality = 2;
   String? dialogResult = r'C:\picked\movie.mp4';
 
   final List<_FakeTask> tasks = [];
@@ -127,8 +128,9 @@ class FakeEngine implements EngineApi {
   double get fps => 30;
 
   @override
-  int taskCreate(String source, int targetW, String desc) {
+  int taskCreate(String source, int targetW, String desc, {int quality = 2}) {
     createCalls++;
+    lastTaskQuality = quality;
     tasks.add(_FakeTask(status: 0, total: 100, temp: 'C:/out/${tasks.length}.mp4'));
     return tasks.length - 1;
   }
@@ -230,6 +232,7 @@ void main() {
     await tester.tap(find.text('开始任务'));
     await tester.pump();
     expect(engine.createCalls, 1);
+    expect(engine.lastTaskQuality, 2);
     expect(engine.tasks.length, 1);
     expect(engine.tasks.first.status, 1); // 自动启动
     expect(find.text('video0.mp4'), findsOneWidget);
@@ -518,6 +521,23 @@ void main() {
     await tester.tap(find.byTooltip('打开文件'));
     await tester.pump();
     expect(find.text('打开失败：文件不存在或无法解码'), findsOneWidget);
+    await _dispose(tester);
+  });
+
+  testWidgets('Task center: quality dropdown defaults to high and offers all modes', (WidgetTester tester) async {
+    final engine = FakeEngine();
+    await tester.pumpWidget(MaterialApp(
+      home: TaskCenterScreen(engine: engine, onPlay: (_) {}),
+    ));
+    await tester.pump();
+    await tester.tap(find.byIcon(Icons.add));
+    await tester.pump();
+    expect(find.text('高质量'), findsOneWidget);
+    await tester.tap(find.text('高质量'));
+    await tester.pump();
+    expect(find.text('快速'), findsOneWidget);
+    expect(find.text('平衡'), findsOneWidget);
+    expect(find.text('高质量'), findsWidgets);
     await _dispose(tester);
   });
 

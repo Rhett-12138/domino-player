@@ -248,6 +248,25 @@ TEST(TaskMetaEmptyDescription) {
   }
 }
 
+// 质量档必须持久化，续编不能换输入策略（否则合并处画质跳变）
+TEST(TaskQualityPersists) {
+  std::string root = testcfg::dataDir() + "/tasks_quality";
+  std::error_code ec;
+  std::filesystem::remove_all(root, ec);
+  TaskCenter tc;
+  tc.init(root);
+  Task* t = tc.create(assetPath("test_av.mp4").c_str(), 1920, SRInputQuality::Balanced);
+  EXPECT_TRUE(t != nullptr);
+  tc.save(t);
+
+  TaskCenter fresh;
+  fresh.init(root);
+  Task* loaded = nullptr;
+  for (auto& tp : fresh.tasks()) if (tp->id == t->id) loaded = tp.get();
+  EXPECT_TRUE(loaded != nullptr);
+  if (loaded) EXPECT_TRUE(loaded->srInput == SRInputQuality::Balanced);
+}
+
 // 带超分的任务应跑到完成（回归"卡在最后一帧"：确认引擎侧能到 ST_DONE）
 TEST(TaskWithSRCompletes) {
   std::string root = testcfg::dataDir() + "/tasks_sr";

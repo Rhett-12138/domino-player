@@ -29,13 +29,15 @@
 - [x] SR/解码移出 UI 线程（2026-10，见 `docs/plan-sr-worker-2026-10.md`）：VideoWorker + 2 帧队列 + seek generation + 停摆跳帧；1080p App 提升到 29.6fps
 - [x] SR 自动降档（2026-10，见 `docs/plan-auto-degrade-2026-10.md`）：持续 A/V 落后时 4K/2K→1080p，1080p 仍落后→关闭；实测 4K 约 2s 后回到 29.98fps，手动 1080p 不降档
 - [x] 离线 SR 质量优先（2026-10，见 `docs/plan-offline-sr-quality-2026-10.md`）：离线默认 FullSource 输入（不再 target/4 预降采样），4x 后用 Lanczos 缩到目标；CRF18/preset slow。720p→1080 FullSource 15.3s/2s，1080p→2K FullSource 32.6s/2s
+- [x] 任务中心质量下拉（2026-10）：快速/平衡/高质量，默认高质量；质量档写入 `meta.tsv`，续编沿用；旧任务缺字段按 Fast 兼容
 
 ### 进行中 / 待办（按优先级）
 1. [ ] **任务中心端到端人工验收**：建任务 → 编码 → 进度 → 断点续编 → 边播放（自动化难驱动 Flutter 控件，需人工过一遍）
 2. [ ] **2K/4K 实时 SR 优化**：1080p 已 29.6fps；2K≈15、4K≈5.9fps。自动降档已兜底（4K/2K→1080p，仍慢→关闭）；真正 2K/4K 30fps 仍需轻量模型/推理优化，零拷贝单项收益有限
-3. [ ] **离线 SR 大图优化**：FullSource 1080p→2K 输出 7680×4320 中间帧，内存/耗时较高；评估 tile + overlap，并给任务中心加质量/平衡/快速选项
-4. [ ] 打包分发：安装包/绿色版、图标、关于页
-5. [ ] 移动端验证：Android/iOS 注入 `AudioSink` 实现（引擎已可移植）
+3. [ ] **2x/3x 模型灵活选择**：分析见 `docs/plan-sr-model-scales-2026-10.md`；2x 适合 1080→4K/720→2K，3x 适合 720→4K；1.5x 无原生模型，建议 2x+缩放
+4. [ ] **离线 SR 大图优化**：FullSource 1080p→4K 中间帧 7680×4320、峰值约 1.9GB；评估 tile + overlap
+5. [ ] 打包分发：安装包/绿色版、图标、关于页
+6. [ ] 移动端验证：Android/iOS 注入 `AudioSink` 实现（引擎已可移植）
 
 ## 里程碑
 | 里程碑 | 内容 | 状态 |

@@ -63,8 +63,14 @@ FullSource 约为 Fast 的 4–8 倍耗时；15s 视频可能需要 2–5 分钟
 - 实机/截图：FullSource 的 1080p 输出文字和色块边缘比 Fast 干净，无灰晕；
 - 1080p 源 2K FullSource 输出 2560×1440；1080p 源 4K FullSource 输出 3840×2160。
 
+## 任务中心质量档
+
+- 新建任务对话框：快速 / 平衡 / 高质量（默认高质量）；
+- `Task::srInput` 写入 `meta.tsv` 第二行 `sr_input=0/1/2`，续编沿用，避免分段质量跳变；
+- 旧 meta 没有该字段时按 **Fast** 兼容（旧版本实际就是 target/4）。
+
 ## 后续
 
 - 如果 FullSource 4K/8K 输出内存压力大，再加 **tile + overlap**，保持输入分块但避免整帧 7680 输出；
-- 任务中心可增加“质量/平衡/快速”选择（当前默认 FullSource）；
+- 2x/3x 模型分析见 `docs/plan-sr-model-scales-2026-10.md`；
 - 离线 CRF/preset 可按用户偏好暴露。

@@ -47,7 +47,8 @@ abstract class EngineApi {
   double get fps;
 
   // ---- 任务中心 ----
-  int taskCreate(String source, int targetW, String desc);
+  /// quality: 0=快速 1=平衡 2=高质量（默认）
+  int taskCreate(String source, int targetW, String desc, {int quality = 2});
   void taskStart(int idx);
   void taskStop(int idx);
   void taskRemove(int idx);
@@ -158,10 +159,10 @@ class DominoEngine implements EngineApi {
   bool setFullscreen(bool on) => _setFullscreen(_h, on ? 1 : 0) == 1;
 
   // ---- 任务中心 ----
-  int taskCreate(String source, int targetW, String desc) {
+  int taskCreate(String source, int targetW, String desc, {int quality = 2}) {
     final s = source.toNativeUtf8();
     final d = desc.toNativeUtf8();
-    final idx = _taskCreate(_h, s, targetW, d);
+    final idx = _taskCreate(_h, s, targetW, quality, d);
     calloc.free(s);
     calloc.free(d);
     return idx;
@@ -266,9 +267,9 @@ class DominoEngine implements EngineApi {
       .lookupFunction<Int32 Function(Pointer<Void>, Int32), int Function(Pointer<Void>, int)>('domino_set_fullscreen');
 
   // ---- 任务 FFI ----
-  static final int Function(Pointer<Void>, Pointer<Utf8>, int, Pointer<Utf8>) _taskCreate = _lib
-      .lookupFunction<Int32 Function(Pointer<Void>, Pointer<Utf8>, Int32, Pointer<Utf8>),
-          int Function(Pointer<Void>, Pointer<Utf8>, int, Pointer<Utf8>)>('domino_task_create');
+  static final int Function(Pointer<Void>, Pointer<Utf8>, int, int, Pointer<Utf8>) _taskCreate = _lib
+      .lookupFunction<Int32 Function(Pointer<Void>, Pointer<Utf8>, Int32, Int32, Pointer<Utf8>),
+          int Function(Pointer<Void>, Pointer<Utf8>, int, int, Pointer<Utf8>)>('domino_task_create_ex');
   static final void Function(Pointer<Void>, int) _taskStart = _lib
       .lookupFunction<Void Function(Pointer<Void>, Int32), void Function(Pointer<Void>, int)>('domino_task_start');
   static final void Function(Pointer<Void>, int) _taskStop = _lib

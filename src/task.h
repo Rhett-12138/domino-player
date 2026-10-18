@@ -13,6 +13,7 @@ struct Task {
   std::string id;
   std::string source;
   int targetW = 1920;
+  SRInputQuality srInput = SRInputQuality::FullSource;   // 离线质量档（续编沿用）
   std::string temp;                  // 产物路径（<dir>/<id>/task.mp4）
   std::string folder;                // 任务文件夹（<dir>/<id>/）
   std::string description;           // 附加描述（用户可填）
@@ -37,7 +38,8 @@ public:
   ~TaskCenter() { shutdown(); }             // 兜底：线程 lambda 捕获 this，不能让它活过 TaskCenter
   void init(const std::string& root = "");  // 数据根目录（空=Config 默认 %APPDATA%/DominoPlayer）
   void save(Task* t);        // 写单个任务的 meta.tsv
-  Task* create(const char* source, int targetW);
+  Task* create(const char* source, int targetW,
+               SRInputQuality quality = SRInputQuality::FullSource);
   void start(Task* t);       // 启动编码线程（有检查点则断点续编）
   void stop(Task* t);        // 取消并等待线程结束，记录断点
   void remove(Task* t);      // 停止 + 递归删除任务文件夹
