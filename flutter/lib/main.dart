@@ -171,9 +171,11 @@ class PlayerScreenState extends State<PlayerScreen> with SingleTickerProviderSta
   // FPS 显示（引擎侧真实呈现帧率）
   double _fps = 0;
 
-  // 实时超分：0=关闭，其他为目标宽
+  // 实时超分：_srTargetW 是用户档位；_srActualTargetW 是自动降档后的实际档位
   int _srTargetW = 0;
+  int _srActualTargetW = 0;
   bool _srFailed = false;
+  bool _srAutoDegraded = false;
 
   // 滤镜缩略图（按需生成：打开/美颜变化时，避免播放中闪动）
   List<ui.Image> _previewImgs = [];
@@ -281,9 +283,18 @@ class PlayerScreenState extends State<PlayerScreen> with SingleTickerProviderSta
     if (fps != _fps) {
       setState(() => _fps = fps);
     }
-    final srFailed = _srTargetW > 0 && e.srFailed;
+    final srFailed = _srActualTargetW > 0 && e.srFailed;
     if (srFailed != _srFailed) {
       setState(() => _srFailed = srFailed);
+    }
+    // 自动降档由引擎决定；只同步实际档位，保留用户档位供下次打开/重试
+    final srTarget = e.srTargetW;
+    final srAuto = e.srAutoDegraded;
+    if (srTarget != _srActualTargetW || srAuto != _srAutoDegraded) {
+      setState(() {
+        _srActualTargetW = srTarget;
+        _srAutoDegraded = srAuto;
+      });
     }
     // 滤镜缩略图：按需生成（打开后首帧 / 美颜变化）；成功后才清 dirty（失败保留以便重试）
     if (_previewDirty && vw > 0 && !_previewBusy) {
@@ -370,10 +381,11 @@ class PlayerScreenState extends State<PlayerScreen> with SingleTickerProviderSta
   String _fmt(double s) => formatTime(s);
 
   String get _srLabel {
-    if (_srTargetW <= 0) return 'SR 关';
-    if (_srTargetW >= 3840) return 'SR 4K';
-    if (_srTargetW >= 2560) return 'SR 2K';
-    return 'SR 1080p';
+    final auto = _srAutoDegraded ? '（自动）' : '';
+    if (_srActualTargetW <= 0) return 'SR 关闭$auto';
+    if (_srActualTargetW >= 3840) return 'SR 4K$auto';
+    if (_srActualTargetW >= 2560) return 'SR 2K$auto';
+    return 'SR 1080p$auto';
   }
 
   @override
@@ -497,13 +509,16 @@ class PlayerScreenState extends State<PlayerScreen> with SingleTickerProviderSta
                 color: _fullscreen ? Colors.lightBlueAccent : Colors.white54,
                 onPressed: _toggleFullscreen,
               ),
-              PopupMenuButton<int>(
+              Flexible(
+                child: PopupMenuButton<int>(
                 tooltip: '实时超分',
                 initialValue: _srTargetW,
                 onSelected: (v) {
                   setState(() {
                     _srTargetW = v;
+                    _srActualTargetW = v;
                     _srFailed = false;
+                    _srAutoDegraded = false;
                   });
                   e.setSR(v > 0, v);
                 },
@@ -517,13 +532,18 @@ class PlayerScreenState extends State<PlayerScreen> with SingleTickerProviderSta
                   padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 6),
                   child: Text(
                     _srFailed ? 'SR 失败' : _srLabel,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
                     style: TextStyle(
                       fontSize: 12,
                       color: _srFailed
                           ? Colors.redAccent
-                          : (_srTargetW > 0 ? Colors.lightBlueAccent : Colors.white54),
+                          : _srAutoDegraded
+                              ? Colors.orangeAccent
+                              : (_srActualTargetW > 0 ? Colors.lightBlueAccent : Colors.white54),
                     ),
                   ),
+                ),
                 ),
               ),
               const SizedBox(width: 8),

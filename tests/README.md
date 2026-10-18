@@ -10,7 +10,7 @@ ctest --test-dir build -C Release
 - `decode`：MediaStream 打开/逐帧解码/seek/资源释放幂等/close 复位
 - `encode`：encodeOffline 产物时长、remuxFaststart 进度与时长、断点续编+合并（含时间戳衔接）、检查点滞后时合并不丢尾段；29.97 源保持 30000/1001 且帧数完整；非 0 起点 `.ts`（start_time≈2.8s）音视频归一；解码 EAGAIN 不丢帧
 - `task`：任务持久化（meta）/重启扫描/断点恢复/删除；失败状态与重试（joinable 线程回归）；续编取消保留分段并再次完成；已合并分段不重复拼接；`.merging`/`.bak` 恢复；续编段缺主文件拒绝提升；空描述 meta 解析
-- `player`：播放状态机冒烟（open/呈现/暂停/seek/EOF，注入哑音频 sink）；暂停恢复不快进；EOF 内部回卷保留 eof、外部 seek 清除 EOF；音频时钟驱动视频（fake clock 2x）；SR 失败回退源帧；暂停中 seek、连续 seek generation；Ticker 停摆后异步追帧
+- `player`：播放状态机冒烟（open/呈现/暂停/seek/EOF，注入哑音频 sink）；暂停恢复不快进；EOF 内部回卷保留 eof、外部 seek 清除 EOF；音频时钟驱动视频（fake clock 2x）；SR 失败回退源帧；暂停中 seek、连续 seek generation；Ticker 停摆后异步追帧；SR 自动降档（慢输出模拟落后，4K→1080p、1080p→关闭）
 - `config`：默认配置与模型路径拼接（注入目录带/不带末尾分隔符都必须合法）
 - `beauty`：肤色判定/磨皮/美白/全部滤镜预设方向
 - `frame_output`：CPU 回退路径的美颜快路径/双缓冲交换/滤镜缩略图/垂直高斯上下对称
@@ -32,7 +32,7 @@ cmake --build build --target domino_sr_bench --config Release
 
 Flutter 测试（`cd flutter && flutter test`，纯 Dart，无需 DLL）：
 - `format_test`：时间格式化、任务状态名、滤镜列表（纯函数）
-- `widget_test`：任务中心新建/边播放、播放页控制条，用 `FakeEngine` 桩驱动（EngineApi 接口注入）
+- `widget_test`：任务中心新建/边播放、播放页控制条、SR 下拉与自动降档标签，用 `FakeEngine` 桩驱动（EngineApi 接口注入）
 
 测试数据用仓库内 `tests/assets/test_av.mp4`（2s/30fps）、`test_long.mp4`（15s/30fps）、
 `test_2997.mp4`（约 2s/29.97fps，用于非整数帧率）与 `test_offset.ts`（start_time≈2.8s，用于起点归一/ADTS）；

@@ -30,12 +30,10 @@ public:
   // ---- 配置 ----
   // 必须在 open 前设置；播放中修改会与 VideoWorker 的模型路径读取竞争
   void setConfig(const Config& c) { cfg_ = c; }
-  void setNoSR(bool b) { noSR_.store(b); srFailed_.store(false); videoCv_.notify_all(); }
-  void setSRTarget(int presetIdx, int targetW) {
-    srPresetIdx_.store(presetIdx);
-    srTargetW_.store(targetW);
-    videoCv_.notify_all();
-  }
+  // setNoSR(true) 是“用户关闭”，会清空档位与自动状态；
+  // setSRTarget(t>0) 会启用 SR 并重置自动降档（手动重选 = 重新尝试）。
+  void setNoSR(bool b);
+  void setSRTarget(int presetIdx, int targetW);
   void setInW(int w) { inW_.store(w); }   // 手动 SR 输入宽（--in）
 
   // ---- 打开/关闭 ----
@@ -61,6 +59,8 @@ public:
   bool eof() const { return eof_; }
   bool noSR() const { return noSR_.load(); }
   int srTargetW() const { return srTargetW_.load(); }
+  int srCeilingW() const { return srCeilingW_.load(); }
+  bool srAutoDegraded() const { return srAutoDegraded_.load(); }
   bool srReady() const { return srInited_.load(); }   // 异步：open 后可能短暂 false
   bool srFailed() const { return srFailed_.load(); }
 
@@ -128,6 +128,7 @@ private:
   void clearVideoQueue();
   void seekInternal(double t);
   void ensureSR();
+  void maybeAutoDegrade(double now);
   void resetClockAnchors();
   double currentMediaClock();
   double nowWall() const { return std::chrono::duration<double>(std::chrono::steady_clock::now() - tStart_).count(); }
@@ -146,10 +147,15 @@ private:
   bool hasAudio_ = false;
   std::atomic<bool> noSR_{ true };
   std::atomic<int> srPresetIdx_{ 1 };
-  std::atomic<int> srTargetW_{ 1920 };
+  std::atomic<int> srCeilingW_{ 0 };   // 用户选择的档位（自动降档不改）
+  std::atomic<int> srTargetW_{ 1920 }; // 当前实际档位
+  std::atomic<bool> srAutoDegraded_{ false };
   std::atomic<int> inW_{ 0 };    // 手动 SR 输入宽（--in）
   std::atomic<bool> srInited_{ false };
   std::atomic<bool> srFailed_{ false };
+  double lagHighSince_ = 0;
+  double autoCooldownUntil_ = 0;
+  double lastAutoCheck_ = 0;
 
   int srOutW_ = 0, srOutH_ = 0;
   double fpsDisplay_ = 0;

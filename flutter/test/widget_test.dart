@@ -48,6 +48,7 @@ class FakeEngine implements EngineApi {
   bool hasVideoState = false;
   bool srActiveState = false;
   bool srFailedState = false;
+  bool srAutoState = false;
   int srTargetState = 0;
 
   @override
@@ -57,6 +58,7 @@ class FakeEngine implements EngineApi {
   void setSR(bool enabled, int targetW) {
     srActiveState = enabled;
     srFailedState = false;
+    srAutoState = false;
     srTargetState = enabled ? targetW : 0;
   }
 
@@ -65,6 +67,12 @@ class FakeEngine implements EngineApi {
 
   @override
   bool get srFailed => srFailedState;
+
+  @override
+  int get srTargetW => srTargetState;
+
+  @override
+  bool get srAutoDegraded => srAutoState;
 
   @override
   void play() {
@@ -471,9 +479,9 @@ void main() {
     final engine = FakeEngine();
     await tester.pumpWidget(MaterialApp(home: PlayerScreen(engine: engine)));
     await tester.pump();
-    expect(find.text('SR 关'), findsOneWidget);
+    expect(find.text('SR 关闭'), findsOneWidget);
 
-    await tester.tap(find.text('SR 关'));
+    await tester.tap(find.text('SR 关闭'));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 300));
     await tester.tap(find.text('超分：1080p'));
@@ -482,6 +490,24 @@ void main() {
     expect(engine.srActiveState, true);
     expect(engine.srTargetState, 1920);
     expect(find.text('SR 1080p'), findsOneWidget);
+    await _dispose(tester);
+  });
+
+  testWidgets('播放页：SR 自动降档后标签同步', (WidgetTester tester) async {
+    final engine = FakeEngine();
+    await tester.pumpWidget(MaterialApp(home: PlayerScreen(engine: engine)));
+    await tester.pump();
+
+    engine.srActiveState = true;
+    engine.srTargetState = 3840;
+    engine.srAutoState = false;
+    await tester.pump(const Duration(milliseconds: 50));
+    expect(find.text('SR 4K'), findsOneWidget);
+
+    engine.srTargetState = 1920;
+    engine.srAutoState = true;
+    await tester.pump(const Duration(milliseconds: 50));
+    expect(find.text('SR 1080p（自动）'), findsOneWidget);
     await _dispose(tester);
   });
 

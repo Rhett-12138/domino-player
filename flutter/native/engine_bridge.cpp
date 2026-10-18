@@ -223,7 +223,7 @@ void domino_set_sr(void* h, int enabled, int targetW) {
   if (!e || !e->player) return;
   if (enabled == 0) {
     e->player->setNoSR(true);
-    return;
+    return;   // 用户关闭：不要先把 target 设成中间值
   }
   if (targetW < 256) targetW = 256;
   e->player->setSRTarget(0, targetW);
@@ -236,6 +236,14 @@ int domino_sr_active(void* h) {
 int domino_sr_failed(void* h) {
   EngineHandle* e = (EngineHandle*)h;
   return (e && e->player && e->player->srFailed()) ? 1 : 0;
+}
+int domino_sr_target_w(void* h) {
+  EngineHandle* e = (EngineHandle*)h;
+  return (e && e->player) ? e->player->srTargetW() : 0;
+}
+int domino_sr_auto(void* h) {
+  EngineHandle* e = (EngineHandle*)h;
+  return (e && e->player && e->player->srAutoDegraded()) ? 1 : 0;
 }
 
 void domino_beauty(void* h, float smooth, float white) {

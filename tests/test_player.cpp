@@ -52,6 +52,20 @@ private:
   bool running_ = false;
 };
 
+// 慢输出：模拟 2K/4K 管线跟不上音频，使呈现 PTS 落后媒体时钟
+class SlowFrameOutput : public IFrameOutput {
+public:
+  void presentFrame(const uint8_t* rgb, int w, int h) override {
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    inner_.presentFrame(rgb, w, h);
+  }
+  void beginPresent() override { inner_.beginPresent(); }
+  void endPresent() override { inner_.endPresent(); }
+
+private:
+  EngineFrameOutput inner_;
+};
+
 static void sleepMs(int ms) { std::this_thread::sleep_for(std::chrono::milliseconds(ms)); }
 
 // vsync 对齐的呈现截止时间：30fps/60Hz 下目标时刻应被对齐到 1/60 整数倍
@@ -185,6 +199,65 @@ TEST(PlayerSRFailsFallsBackToSource) {
     std::lock_guard<std::mutex> lk(out.lock());
     EXPECT_EQ(out.width(), 1280);   // 回退源帧，不显示 1080p
   }
+  p.close();
+}
+
+// 持续 A/V 落后：4K 自动降到 1080p；1080p 仍落后则关闭 SR
+TEST(PlayerAutoDegrade) {
+  auto runUntil = [](Player& p, int targetW, int timeoutMs) {
+    auto t0 = std::chrono::steady_clock::now();
+    while (std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count() < timeoutMs / 1000.0) {
+      p.pump();
+      sleepMs(5);
+      if (p.srTargetW() == targetW) return;
+    }
+  };
+
+  {
+    SlowFrameOutput out;
+    Player p(out);
+    p.setAudioSink(std::make_unique<ClockAudioSink>());
+    Config cfg = Config::defaults();
+    cfg.modelBase = testcfg::dataDir() + "/no_such_model";   // 不依赖 GPU；慢输出模拟持续落后
+    p.setConfig(cfg);
+    p.setSRTarget(0, 3840);
+    p.setNoSR(false);
+    EXPECT_TRUE(p.open(assetPath("test_long.mp4").c_str()));
+    runUntil(p, 1920, 6000);
+    EXPECT_EQ(p.srTargetW(), 1920);
+    EXPECT_TRUE(p.srAutoDegraded());
+    p.close();
+  }
+
+  {
+    SlowFrameOutput out;
+    Player p(out);
+    p.setAudioSink(std::make_unique<ClockAudioSink>());
+    Config cfg = Config::defaults();
+    cfg.modelBase = testcfg::dataDir() + "/no_such_model";
+    p.setConfig(cfg);
+    p.setSRTarget(0, 1920);
+    p.setNoSR(false);
+    EXPECT_TRUE(p.open(assetPath("test_long.mp4").c_str()));
+    runUntil(p, 0, 6000);
+    EXPECT_EQ(p.srTargetW(), 0);
+    EXPECT_TRUE(p.srAutoDegraded());
+    EXPECT_TRUE(p.noSR());
+    p.close();
+  }
+}
+
+// SR 关闭时即使输出慢也不应自动改档
+TEST(PlayerNoAutoDegradeWhenSROff) {
+  SlowFrameOutput out;
+  Player p(out);
+  p.setAudioSink(std::make_unique<ClockAudioSink>());
+  p.setConfig(Config::defaults());
+  p.setNoSR(true);
+  EXPECT_TRUE(p.open(assetPath("test_long.mp4").c_str()));
+  for (int i = 0; i < 25; i++) { p.pump(); sleepMs(5); }
+  EXPECT_EQ(p.srTargetW(), 0);
+  EXPECT_FALSE(p.srAutoDegraded());
   p.close();
 }
 

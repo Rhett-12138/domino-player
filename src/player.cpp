@@ -102,6 +102,79 @@ void Player::ensureSR() {
   }
 }
 
+void Player::setNoSR(bool b) {
+  noSR_.store(b);
+  srFailed_.store(false);
+  if (b) {
+    // 用户主动关闭：清掉档位与自动状态
+    srCeilingW_.store(0);
+    srTargetW_.store(0);
+    srAutoDegraded_.store(false);
+  }
+  lagHighSince_ = 0;
+  autoCooldownUntil_ = 0;
+  dropUntilPts_.store(0);
+  videoCv_.notify_all();
+}
+
+void Player::setSRTarget(int presetIdx, int targetW) {
+  srPresetIdx_.store(presetIdx);
+  srCeilingW_.store(targetW);
+  srTargetW_.store(targetW);
+  srAutoDegraded_.store(false);
+  srFailed_.store(false);
+  if (targetW > 0) noSR_.store(false);
+  // 手动重选档位 = 重新尝试；清掉自动降档的冷却/追帧
+  lagHighSince_ = 0;
+  autoCooldownUntil_ = 0;
+  dropUntilPts_.store(0);
+  videoCv_.notify_all();
+}
+
+void Player::maybeAutoDegrade(double now) {
+  if (noSR_.load() || srCeilingW_.load() <= 0) return;
+  if (now < autoCooldownUntil_) return;
+  if (now - lastAutoCheck_ < 0.20) return;
+  lastAutoCheck_ = now;
+
+  const double lag = currentMediaClock() - (havePending_ ? pendingPts_ : playhead_);
+  const double frameDur = fps_ > 0 ? 1.0 / fps_ : 0.033;
+  const double lagThreshold = (std::max)(0.30, frameDur * 3.0);
+  if (lag <= lagThreshold) {
+    lagHighSince_ = 0;
+    return;
+  }
+  if (lagHighSince_ <= 0) {
+    lagHighSince_ = now;
+    return;
+  }
+  if (now - lagHighSince_ < 1.0) return;
+
+  const int cur = srTargetW_.load();
+  if (cur <= 0) return;
+  // 2K/4K 直接降到 1080p；1080p 仍跟不上则关闭 SR。
+  const int next = cur > 1920 ? 1920 : 0;
+  srTargetW_.store(next);
+  srAutoDegraded_.store(true);
+  if (next == 0) noSR_.store(true);
+
+  // 追到当前媒体时钟，避免降档后仍保留之前的音画差
+  const double clock = currentMediaClock();
+  if (havePending_) {
+    std::lock_guard<std::mutex> lk(videoMu_);
+    freeBufs_.push_back(std::move(pendingFrame_.rgb));
+    havePending_ = false;
+  }
+  pendingPts_ = clock;
+  dropUntilPts_.store((std::min)(clock, duration_ > 0 ? duration_ : clock));
+  clearVideoQueue();
+  videoCv_.notify_all();
+
+  lagHighSince_ = 0;
+  autoCooldownUntil_ = now + 4.0;
+  fprintf(stderr, "sr auto degrade: %d -> %d (lag %.2fs)\n", cur, next, lag);
+}
+
 bool Player::open(const std::string& path) {
   stopVideo();
   stopAudio();
@@ -117,6 +190,10 @@ bool Player::open(const std::string& path) {
   if (!vid_.open(path.c_str())) return false;
   currentPath_ = path;
   srFailed_.store(false);
+  srAutoDegraded_.store(false);
+  lagHighSince_ = 0;
+  autoCooldownUntil_ = 0;
+  lastAutoCheck_ = 0;
   duration_ = vid_.duration;
   fps_ = vid_.fps;
   if (vid_.hasAudio && audio_->init() && aud_.open(path.c_str()) && aud_.hasAudio)
@@ -125,6 +202,7 @@ bool Player::open(const std::string& path) {
     hasAudio_ = false;
   paused_.store(false);
   playhead_ = 0;
+  pendingPts_ = 0;   // 新文件首帧前不能沿用上一个视频的 PTS 锚点
   eof_ = false;
   seekPending_.store(false);
   eofSeek_ = false;
@@ -158,10 +236,14 @@ void Player::close() {
   currentPath_.clear();
   resetClockAnchors();
   playhead_ = 0;
+  pendingPts_ = 0;
   duration_ = 0;
   fps_ = 30;
   hasAudio_ = false;
   eof_ = false;
+  lagHighSince_ = 0;
+  autoCooldownUntil_ = 0;
+  lastAutoCheck_ = 0;
 }
 
 void Player::requestSeek(double t) {
@@ -180,6 +262,9 @@ void Player::seekInternal(double t) {
   resetAudio_.store(true);
   playhead_ = t;
   pendingPts_ = t;   // seek 后时钟/同步保护以目标为基准，避免用旧 EOF 帧 PTS 锚定
+  lagHighSince_ = 0;
+  autoCooldownUntil_ = 0;
+  lastAutoCheck_ = 0;
   resetClockAnchors();
   havePending_ = false;
   pendingEOF_ = false;
@@ -219,6 +304,7 @@ void Player::setPaused(bool p) {
     eof_ = false;   // 重新播放即脱离 EOF 态
     // 暂停期间墙钟仍在走，恢复时必须重置呈现基准，否则会按 pump 频率快进追帧
     presentedFrames_ = 0;
+    lagHighSince_ = 0;
     resetClockAnchors();
   }
   if (hasAudio_) {
@@ -501,8 +587,11 @@ void Player::pump() {
     dropUntilPts_.store(currentMediaClock());
     clearVideoQueue();
     videoCv_.notify_all();
+    lagHighSince_ = 0;   // UI 停摆不是 SR 慢，不能触发自动降档
+    autoCooldownUntil_ = now + 2.0;
   }
   lastPumpWall_ = now;
+  maybeAutoDegrade(now);
 
   prefetch();
   if (readyToPresent()) {

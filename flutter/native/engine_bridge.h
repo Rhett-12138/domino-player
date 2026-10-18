@@ -39,6 +39,9 @@ DOMINO_EXPORT void   domino_set_sr(void* h, int enabled, int targetW);
 // SR 当前是否启用 / 是否初始化失败（失败时播放回退源帧）
 DOMINO_EXPORT int    domino_sr_active(void* h);
 DOMINO_EXPORT int    domino_sr_failed(void* h);
+// 当前实际 SR 目标宽（自动降档后变化；关闭时为 0）/ 是否处于自动降档
+DOMINO_EXPORT int    domino_sr_target_w(void* h);
+DOMINO_EXPORT int    domino_sr_auto(void* h);
 
 // 美颜/滤镜
 DOMINO_EXPORT void   domino_beauty(void* h, float smooth, float white);

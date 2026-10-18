@@ -58,5 +58,7 @@ GPU 路径每帧都要 CPU 做 RGB24→RGBA 上传；4K 下这是明显成本。
    且**不跑 SR**，避免长时间卡 UI。
 3. 实机结果：720p 源 SR 1080p App **21 → 29.6 FPS**；2K ≈15、4K ≈5.9 FPS（受推理限制，
    低于实时时是慢放/音画逐渐分离），但 UI 线程不再被单帧 50–123ms 的 SR 阻塞。
-4. 仍保留：`IFrameOutput` RGB24 契约、GPU surface 每帧等待、任务中心 SR 并发策略；
+4. 追加 **SR 自动降档**：持续 A/V 落后时 4K/2K→1080p，1080p→关闭；用于兜底
+   2K/4K 低于实时导致的慢放/音画分离（见 `docs/plan-auto-degrade-2026-10.md`）。
+5. 仍保留：`IFrameOutput` RGB24 契约、GPU surface 每帧等待、任务中心 SR 并发策略；
    这些列入后续计划。
