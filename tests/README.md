@@ -10,7 +10,7 @@ ctest --test-dir build -C Release
 - `decode`：MediaStream 打开/逐帧解码/seek/资源释放幂等/close 复位
 - `encode`：encodeOffline 产物时长、remuxFaststart 进度与时长、断点续编+合并（含时间戳衔接）、检查点滞后时合并不丢尾段；29.97 源保持 30000/1001 且帧数完整；非 0 起点 `.ts`（start_time≈2.8s）音视频归一；解码 EAGAIN 不丢帧
 - `task`：任务持久化（meta）/重启扫描/断点恢复/删除；失败状态与重试（joinable 线程回归）；续编取消保留分段并再次完成；已合并分段不重复拼接；`.merging`/`.bak` 恢复；续编段缺主文件拒绝提升；空描述 meta 解析
-- `player`：播放状态机冒烟（open/呈现/暂停/seek/EOF，注入哑音频 sink）；暂停恢复不快进；EOF 内部回卷保留 eof、外部 seek 清除 EOF；音频时钟驱动视频（fake clock 2x）
+- `player`：播放状态机冒烟（open/呈现/暂停/seek/EOF，注入哑音频 sink）；暂停恢复不快进；EOF 内部回卷保留 eof、外部 seek 清除 EOF；音频时钟驱动视频（fake clock 2x）；SR 失败回退源帧；暂停中 seek、连续 seek generation；Ticker 停摆后异步追帧
 - `config`：默认配置与模型路径拼接（注入目录带/不带末尾分隔符都必须合法）
 - `beauty`：肤色判定/磨皮/美白/全部滤镜预设方向
 - `frame_output`：CPU 回退路径的美颜快路径/双缓冲交换/滤镜缩略图/垂直高斯上下对称

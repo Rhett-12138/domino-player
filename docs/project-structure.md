@@ -20,7 +20,7 @@ domino-player/
 │   ├── frame_output.{h,cpp}  # EngineFrameOutput：CPU 美颜 + 帧缓冲（前端上屏用）
 │   ├── beauty_math.h     # 美颜/滤镜纯数学（可单测）
 │   ├── ffmpeg_raii.h     # FFmpeg 资源 RAII 守卫
-│   ├── player.{h,cpp}    # Player：播放核心（解码/超分/调度/A·V 同步/seek）——经 IFrameOutput 输出
+│   ├── player.{h,cpp}    # Player：播放核心（VideoWorker 解码/SR + 呈现调度/A·V/seek）——经 IFrameOutput 输出
 │   │                     #   依赖 AudioSink 接口；默认工厂 createDefaultAudioSink() 见 audio.cpp
 │   └── audio.{h,cpp}     # WasapiAudioOut：AudioSink 的 WASAPI 实现（Windows）
 ├── tests/                # C++ 单测（链接 domino_core + player + audio）+ GUI 回归脚本

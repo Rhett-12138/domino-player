@@ -15,14 +15,20 @@ Player::~Player() {
 }
 
 void Player::shutdown() {
+  stopVideo();
   stopAudio();
   vid_.close();
   aud_.close();
+  clearVideoQueue();
+  {
+    std::lock_guard<std::mutex> lk(videoMu_);
+    freeBufs_.clear();
+  }
   currentPath_.clear();
   resetClockAnchors();
   sr_.clear();   // 全局 GPU 实例由前端在停止所有任务后统一销毁
-  srInited_ = false;
-  srFailed_ = false;
+  srInited_.store(false);
+  srFailed_.store(false);
 }
 
 void Player::audioFeedStatic(Player* self) { self->audioFeed(); }
@@ -85,27 +91,32 @@ void Player::audioFeed() {
 }
 
 void Player::ensureSR() {
-  if (noSR_ || srFailed_) return;
-  if (srInited_ && !sr_.ready()) srInited_ = false;
-  if (srInited_) return;
+  if (noSR_.load() || srFailed_.load()) return;
+  if (srInited_.load() && !sr_.ready()) srInited_.store(false);
+  if (srInited_.load()) return;
   if (sr_.init(cfg_.srParam().c_str(), cfg_.srBin().c_str())) {
-    srInited_ = true;
+    srInited_.store(true);
   } else {
-    srFailed_ = true;
+    srFailed_.store(true);
     fprintf(stderr, "sr init failed\n");
   }
 }
 
 bool Player::open(const std::string& path) {
+  stopVideo();
   stopAudio();
   vid_.close();
   aud_.close();
   currentPath_.clear();
+  clearVideoQueue();
+  {
+    std::lock_guard<std::mutex> lk(videoMu_);
+    freeBufs_.clear();
+  }
   resetClockAnchors();
   if (!vid_.open(path.c_str())) return false;
   currentPath_ = path;
-  srFailed_ = false;
-  ensureSR();
+  srFailed_.store(false);
   duration_ = vid_.duration;
   fps_ = vid_.fps;
   if (vid_.hasAudio && audio_->init() && aud_.open(path.c_str()) && aud_.hasAudio)
@@ -126,14 +137,24 @@ bool Player::open(const std::string& path) {
   lastFps_ = 0;
   fpsT0_ = std::chrono::steady_clock::now();
   tStart_ = std::chrono::steady_clock::now();
-  rgbBuf_.resize((size_t)vid_.vw * vid_.vh * 3);
+  srcBuf_.assign((size_t)vid_.vw * vid_.vh * 3, 0);
+  videoEof_.store(false);
+  seekReq_.store(false);
+  dropUntilPts_.store(0);
+  startVideo();
   return true;
 }
 
 void Player::close() {
+  stopVideo();
   stopAudio();
   vid_.close();
   aud_.close();
+  clearVideoQueue();
+  {
+    std::lock_guard<std::mutex> lk(videoMu_);
+    freeBufs_.clear();
+  }
   currentPath_.clear();
   resetClockAnchors();
   playhead_ = 0;
@@ -152,14 +173,28 @@ void Player::requestSeek(double t) {
 }
 
 void Player::seekInternal(double t) {
-  vid_.seek(t);
   {
     std::lock_guard<std::mutex> lk(audMu_);
     aud_.seek(t);
   }
   resetAudio_.store(true);
   playhead_ = t;
+  pendingPts_ = t;   // seek 后时钟/同步保护以目标为基准，避免用旧 EOF 帧 PTS 锚定
   resetClockAnchors();
+  havePending_ = false;
+  pendingEOF_ = false;
+  // 视频 seek 交给 worker；generation 保证 seek 前在途帧被丢弃
+  seekTargetVideo_.store(t);
+  seekGen_.fetch_add(1);
+  seekReq_.store(true);
+  dropUntilPts_.store(0);
+  videoEof_.store(false);
+  {
+    std::lock_guard<std::mutex> lk(videoMu_);
+    if (!pendingFrame_.rgb.empty()) freeBufs_.push_back(std::move(pendingFrame_.rgb));
+  }
+  clearVideoQueue();
+  videoCv_.notify_all();
 }
 
 bool Player::processSeek() {
@@ -179,6 +214,7 @@ bool Player::processSeek() {
 void Player::setPaused(bool p) {
   if (paused_.load() == p) return;
   paused_.store(p);
+  videoCv_.notify_all();
   if (!p) {
     eof_ = false;   // 重新播放即脱离 EOF 态
     // 暂停期间墙钟仍在走，恢复时必须重置呈现基准，否则会按 pump 频率快进追帧
@@ -228,41 +264,148 @@ void Player::stopAudio() {
   hasAudio_ = false;
 }
 
-void Player::prefetch(bool decodeOnly) {
+void Player::videoLoopStatic(Player* self) { self->videoLoop(); }
+
+void Player::startVideo() {
+  if (videoThread_.joinable()) videoThread_.join();
+  videoStop_.store(false);
+  videoThread_ = std::thread(videoLoopStatic, this);
+}
+
+void Player::stopVideo() {
+  videoStop_.store(true);
+  videoCv_.notify_all();
+  if (videoThread_.joinable()) { videoThread_.join(); videoThread_ = std::thread(); }
+}
+
+void Player::clearVideoQueue() {
+  std::lock_guard<std::mutex> lk(videoMu_);
+  for (auto& f : videoFrames_) freeBufs_.push_back(std::move(f.rgb));
+  videoFrames_.clear();
+}
+
+void Player::videoLoop() {
+  while (!videoStop_.load()) {
+    // seek 必须在 paused 分支之前消费：暂停时拖动进度条/EOF 回卷也会请求 seek，
+    // 否则 wait predicate 永远为真，worker 会空转烧 CPU。
+    if (seekReq_.exchange(false)) {
+      vid_.seek(seekTargetVideo_.load());
+      videoEof_.store(false);
+      dropUntilPts_.store(0);
+      clearVideoQueue();
+      videoCv_.notify_all();
+      continue;
+    }
+    if (paused_.load()) {
+      std::unique_lock<std::mutex> lk(videoMu_);
+      videoCv_.wait_for(lk, std::chrono::milliseconds(20), [&] {
+        return videoStop_.load() || !paused_.load() || seekReq_.load();
+      });
+      continue;
+    }
+
+    {
+      std::unique_lock<std::mutex> lk(videoMu_);
+      videoCv_.wait_for(lk, std::chrono::milliseconds(20), [&] {
+        return videoStop_.load() || seekReq_.load() || paused_.load() ||
+               videoFrames_.size() < 2;
+      });
+      if (videoStop_.load() || paused_.load() || seekReq_.load()) continue;
+      if (videoFrames_.size() >= 2) continue;
+    }
+
+    const uint64_t gen = seekGen_.load();
+    double pts = 0;
+    int r = vid_.nextVideoFrame(srcBuf_.data(), &pts);
+    if (r < 0) {
+      // 解码到尾部时若 seek 已发生，不要把旧代的 EOF 传给 UI
+      if (seekGen_.load() == gen && !seekReq_.load()) videoEof_.store(true);
+      std::unique_lock<std::mutex> lk(videoMu_);
+      videoCv_.wait_for(lk, std::chrono::milliseconds(30), [&] {
+        return videoStop_.load() || seekReq_.load() || paused_.load();
+      });
+      continue;
+    }
+    if (seekGen_.load() != gen) continue;
+
+    // Ticker 停摆/稳态落后追帧：只解码，不跑 SR
+    const double dropUntil = dropUntilPts_.load();
+    if (dropUntil > 0 && pts + 0.10 < dropUntil) continue;
+
+    if (!noSR_.load() && !srInited_.load() && !srFailed_.load()) ensureSR();
+    const bool useSR = !noSR_.load() && srInited_.load() && !srFailed_.load();
+    const bool needSR = useSR && (inW_.load() > 0 || vid_.vw < srTargetW_.load());
+
+    VideoFrame f;
+    f.pts = pts;
+    {
+      std::lock_guard<std::mutex> lk(videoMu_);
+      if (!freeBufs_.empty()) {
+        f.rgb = std::move(freeBufs_.back());
+        freeBufs_.pop_back();
+      }
+    }
+
+    if (needSR) {
+      const int inW = inW_.load() > 0 ? inW_.load() : srTargetW_.load() / 4;
+      const int sw = sr_.process(srcBuf_.data(), vid_.vw, vid_.vh, inW, f.rgb);
+      if (sw > 0) {
+        f.w = sw;
+        f.h = (int)(f.rgb.size() / (size_t)sw / 3);
+      } else {
+        srFailed_.store(true);
+        f.rgb.assign(srcBuf_.data(), srcBuf_.data() + (size_t)vid_.vw * vid_.vh * 3);
+        f.w = vid_.vw;
+        f.h = vid_.vh;
+      }
+    } else {
+      f.rgb.assign(srcBuf_.data(), srcBuf_.data() + (size_t)vid_.vw * vid_.vh * 3);
+      f.w = vid_.vw;
+      f.h = vid_.vh;
+    }
+    if (seekGen_.load() != gen) continue;
+
+    // 解码/SR 期间 UI 可能刚设置停摆追帧目标：丢弃已过期帧（不发布）
+    const double dropAfter = dropUntilPts_.load();
+    if (dropAfter > 0 && pts + 0.10 < dropAfter) {
+      std::lock_guard<std::mutex> lk(videoMu_);
+      freeBufs_.push_back(std::move(f.rgb));
+      continue;
+    }
+
+    {
+      std::lock_guard<std::mutex> lk(videoMu_);
+      // 锁内再校验 generation：UI seek 会先 ++gen 再 clearVideoQueue，
+      // 避免旧帧在 clear 之后被塞回队列。
+      if (videoStop_.load() || seekGen_.load() != gen) {
+        freeBufs_.push_back(std::move(f.rgb));
+        continue;
+      }
+      videoFrames_.push_back(std::move(f));
+    }
+    // 追帧目标帧已经发布后才清除；期间 UI 不会重复设置新目标，避免 worker 被追帧饿死
+    if (dropUntil > 0 && dropUntilPts_.load() <= dropUntil + 1e-6)
+      dropUntilPts_.store(0);
+    videoCv_.notify_all();
+  }
+}
+
+void Player::prefetch() {
   if (havePending_ || pendingEOF_) return;
-  double pts = 0;
-  int r = vid_.nextVideoFrame(rgbBuf_.data(), &pts);
-  if (r < 0) { pendingEOF_ = true; return; }
-  pendingPts_ = pts;
-  if (decodeOnly) return;   // 追帧丢弃：只解码，不跑 SR
-  if (!noSR_ && !srInited_ && !srFailed_) ensureSR();
-  bool useSR = !noSR_ && srInited_;
-
-  auto useSource = [&] {
-    srgb_.assign(rgbBuf_.data(), rgbBuf_.data() + (size_t)vid_.vw * vid_.vh * 3);
-    srOutW_ = vid_.vw;
-    srOutH_ = vid_.vh;
-    havePending_ = true;
-  };
-
-  // 关闭超分、SR 初始化失败、或源宽已 ≥ 目标挡位：直接用源帧
-  if (!useSR || (inW_ <= 0 && vid_.vw >= srTargetW_)) {
-    useSource();
-    return;
+  VideoFrame f;
+  {
+    std::lock_guard<std::mutex> lk(videoMu_);
+    if (videoFrames_.empty()) {
+      if (videoEof_.load()) pendingEOF_ = true;
+      return;
+    }
+    f = std::move(videoFrames_.front());
+    videoFrames_.pop_front();
   }
-
-  // 挡位模式：SR 输入 = 挡位/4，模型 4x 输出 = 挡位；--in 为旧用法固定输入宽
-  int inW = inW_ > 0 ? inW_ : srTargetW_ / 4;
-  int sw = sr_.process(rgbBuf_.data(), vid_.vw, vid_.vh, inW, srgb_);
-  if (sw > 0) {
-    srOutW_ = sw;
-    srOutH_ = (int)(srgb_.size() / sw / 3);
-    havePending_ = true;
-  } else {
-    // 推理失败：本次及后续回退源帧，避免每帧重复失败
-    srFailed_ = true;
-    useSource();
-  }
+  videoCv_.notify_all();
+  pendingFrame_ = std::move(f);
+  pendingPts_ = pendingFrame_.pts;
+  havePending_ = true;
 }
 
 void Player::resetClockAnchors() {
@@ -273,8 +416,6 @@ void Player::resetClockAnchors() {
   lastAudioClock_ = 0;
   lastAudioClockWall_ = 0;
   lastPumpWall_ = 0;
-  catchingUp_ = false;
-  catchupDeadline_ = 0;
   audioClockValid_ = false;
 }
 
@@ -321,10 +462,18 @@ bool Player::readyToPresent() {
 }
 
 bool Player::presentFrame() {
-  out_.presentFrame(srgb_.data(), srOutW_, srOutH_);
+  srOutW_ = pendingFrame_.w;
+  srOutH_ = pendingFrame_.h;
+  out_.presentFrame(pendingFrame_.rgb.data(), pendingFrame_.w, pendingFrame_.h);
   playhead_ = pendingPts_;
   presentedFrames_++;
   havePending_ = false;
+  // 帧缓冲回收到 worker，避免每帧分配大 vector
+  {
+    std::lock_guard<std::mutex> lk(videoMu_);
+    freeBufs_.push_back(std::move(pendingFrame_.rgb));
+  }
+  videoCv_.notify_all();
   frameIdx_++;
   drewVideo_ = true;
   bool first = (presentedFrames_ == 1);
@@ -343,25 +492,18 @@ void Player::pump() {
 
   const double now = nowWall();
   if (lastPumpWall_ > 0 && now - lastPumpWall_ > 0.5) {
-    catchingUp_ = true;
-    catchupDeadline_ = now + 2.0;   // 最多追赶 2s，避免弱机永久丢帧
+    // Ticker 停摆：让 worker 只解码、跳过 SR 追到当前媒体时钟；UI 不阻塞
+    if (havePending_) {
+      std::lock_guard<std::mutex> lk(videoMu_);
+      freeBufs_.push_back(std::move(pendingFrame_.rgb));
+      havePending_ = false;
+    }
+    dropUntilPts_.store(currentMediaClock());
+    clearVideoQueue();
+    videoCv_.notify_all();
   }
   lastPumpWall_ = now;
 
-  // 仅 Ticker 真正停摆后才追帧；SR/解码持续慢于实时不能丢帧，
-  // 否则会永远追不上、几乎不呈现（4K SR 评估时暴露）。
-  // 每个 pump 追帧最多 100ms，且只解码不跑 SR；避免一次 pump 卡数十秒。
-  if (catchingUp_) {
-    havePending_ = false;
-    const double catchupStart = nowWall();
-    while (!pendingEOF_ && nowWall() - catchupStart < 0.10) {
-      if (currentMediaClock() - pendingPts_ <= 0.10) break;
-      prefetch(true);
-    }
-    if (pendingEOF_ || nowWall() >= catchupDeadline_ ||
-        currentMediaClock() - pendingPts_ <= 0.10)
-      catchingUp_ = false;
-  }
   prefetch();
   if (readyToPresent()) {
     if (presentFrame()) startAudio();   // 第一帧呈现时启动音频

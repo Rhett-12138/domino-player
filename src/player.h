@@ -5,6 +5,8 @@
 #include "audio_interface.h"
 #include "config.h"
 #include <atomic>
+#include <condition_variable>
+#include <deque>
 #include <thread>
 #include <vector>
 #include <string>
@@ -26,10 +28,15 @@ public:
   ~Player();
 
   // ---- 配置 ----
+  // 必须在 open 前设置；播放中修改会与 VideoWorker 的模型路径读取竞争
   void setConfig(const Config& c) { cfg_ = c; }
-  void setNoSR(bool b) { noSR_ = b; srFailed_ = false; }
-  void setSRTarget(int presetIdx, int targetW) { srPresetIdx_ = presetIdx; srTargetW_ = targetW; }
-  void setInW(int w) { inW_ = w; }   // 手动 SR 输入宽（--in）
+  void setNoSR(bool b) { noSR_.store(b); srFailed_.store(false); videoCv_.notify_all(); }
+  void setSRTarget(int presetIdx, int targetW) {
+    srPresetIdx_.store(presetIdx);
+    srTargetW_.store(targetW);
+    videoCv_.notify_all();
+  }
+  void setInW(int w) { inW_.store(w); }   // 手动 SR 输入宽（--in）
 
   // ---- 打开/关闭 ----
   bool open(const std::string& path);
@@ -52,10 +59,10 @@ public:
   long long frameIdx() const { return frameIdx_; }
   bool drewVideo() const { return drewVideo_; }
   bool eof() const { return eof_; }
-  bool noSR() const { return noSR_; }
-  int srTargetW() const { return srTargetW_; }
-  bool srReady() const { return srInited_; }
-  bool srFailed() const { return srFailed_; }
+  bool noSR() const { return noSR_.load(); }
+  int srTargetW() const { return srTargetW_.load(); }
+  bool srReady() const { return srInited_.load(); }   // 异步：open 后可能短暂 false
+  bool srFailed() const { return srFailed_.load(); }
 
   // ---- 控制 ----
   void setPaused(bool p);
@@ -72,8 +79,8 @@ public:
   void pump();
   // 处理挂起的 seek（若有）；返回是否发生了 seek（需要重置调度）
   bool processSeek();
-  // 预取解码+SR 下一帧（如需要）；decodeOnly=true 只解码、不跑 SR（用于停摆追帧）
-  void prefetch(bool decodeOnly = false);
+  // 从 VideoWorker 队列取一帧（UI 线程调用，不跑解码/SR）
+  void prefetch();
   // 是否有已处理好的帧且已到呈现截止时间（惰性初始化 baseWall）
   bool readyToPresent();
   // 呈现当前帧：上传纹理 + 推进播放时钟；返回本帧是否应启动音频
@@ -106,8 +113,19 @@ public:
   const std::string& currentPath() const { return currentPath_; }
 
 private:
+  struct VideoFrame {
+    std::vector<uint8_t> rgb;
+    int w = 0, h = 0;
+    double pts = 0;
+  };
+
   static void audioFeedStatic(Player* self);
   void audioFeed();
+  static void videoLoopStatic(Player* self);
+  void videoLoop();
+  void startVideo();
+  void stopVideo();
+  void clearVideoQueue();
   void seekInternal(double t);
   void ensureSR();
   void resetClockAnchors();
@@ -126,15 +144,13 @@ private:
   double duration_ = 0;
   double fps_ = 30;
   bool hasAudio_ = false;
-  bool noSR_ = true;
-  int srPresetIdx_ = 1;
-  int srTargetW_ = 1920;
-  int inW_ = 0;                 // 手动 SR 输入宽（--in）
-  bool srInited_ = false;
-  bool srFailed_ = false;
+  std::atomic<bool> noSR_{ true };
+  std::atomic<int> srPresetIdx_{ 1 };
+  std::atomic<int> srTargetW_{ 1920 };
+  std::atomic<int> inW_{ 0 };    // 手动 SR 输入宽（--in）
+  std::atomic<bool> srInited_{ false };
+  std::atomic<bool> srFailed_{ false };
 
-  std::vector<uint8_t> rgbBuf_; // 解码帧缓冲（源尺寸）
-  std::vector<uint8_t> srgb_;   // 处理后帧（可能为超分输出）
   int srOutW_ = 0, srOutH_ = 0;
   double fpsDisplay_ = 0;
   long long frameIdx_ = 0;
@@ -143,6 +159,21 @@ private:
   int frameCount_ = 0;
   double lastFps_ = 0;
   std::chrono::steady_clock::time_point fpsT0_;
+
+  // 视频工作线程：解码 + SR，UI 只消费队列
+  std::thread videoThread_;
+  std::atomic<bool> videoStop_{ false };
+  std::atomic<bool> videoEof_{ false };
+  std::atomic<uint64_t> seekGen_{ 0 };
+  std::atomic<bool> seekReq_{ false };
+  std::atomic<double> seekTargetVideo_{ 0 };
+  std::atomic<double> dropUntilPts_{ 0 };
+  std::mutex videoMu_;
+  std::condition_variable videoCv_;
+  std::deque<VideoFrame> videoFrames_;
+  std::vector<std::vector<uint8_t>> freeBufs_;
+  std::vector<uint8_t> srcBuf_;   // worker 解码缓冲
+  VideoFrame pendingFrame_;       // UI 当前待呈现帧
 
   // 音频喂送
   std::atomic<bool> audioStarted_{ false };
@@ -165,8 +196,6 @@ private:
   double lastAudioClock_ = 0;
   double lastAudioClockWall_ = 0;
   double lastPumpWall_ = 0;
-  bool catchingUp_ = false;
-  double catchupDeadline_ = 0;
   bool audioClockValid_ = false;
   long long presentedFrames_ = 0;
   bool havePending_ = false;

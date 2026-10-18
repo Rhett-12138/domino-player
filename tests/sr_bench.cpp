@@ -77,8 +77,17 @@ int main(int argc, char** argv) {
     p.setConfig(cfg);
     p.setSRTarget(0, target);
     p.setNoSR(false);
-    if (!p.open(src.c_str()) || !p.srReady()) {
-      printf("  %5d   SR unavailable / open failed\n", target);
+    if (!p.open(src.c_str())) {
+      printf("  %5d   open failed\n", target);
+      continue;
+    }
+    // SR 在 VideoWorker 里异步初始化
+    for (int i = 0; i < 200 && !p.srReady() && !p.srFailed(); i++) {
+      p.pump();
+      std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    if (!p.srReady()) {
+      printf("  %5d   SR unavailable (failed=%d)\n", target, p.srFailed() ? 1 : 0);
       continue;
     }
     auto t0 = std::chrono::steady_clock::now();

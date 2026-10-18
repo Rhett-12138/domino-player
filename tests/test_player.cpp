@@ -175,14 +175,56 @@ TEST(PlayerSRFailsFallsBackToSource) {
   p.setSRTarget(0, 1920);
   p.setNoSR(false);
   EXPECT_TRUE(p.open(assetPath("test_av.mp4").c_str()));
+  // SR 初始化在 VideoWorker 里异步进行
+  for (int i = 0; i < 100 && !p.srFailed(); i++) { p.pump(); sleepMs(5); }
   EXPECT_TRUE(p.srFailed());
   EXPECT_FALSE(p.srReady());
-  for (int i = 0; i < 120; i++) { p.pump(); sleepMs(5); }
+  for (int i = 0; i < 160; i++) { p.pump(); sleepMs(5); }
   EXPECT_TRUE(p.frameIdx() > 10);
   {
     std::lock_guard<std::mutex> lk(out.lock());
     EXPECT_EQ(out.width(), 1280);   // 回退源帧，不显示 1080p
   }
+  p.close();
+}
+
+// 暂停中 seek：worker 仍应执行 seek（不能自旋），恢复后从目标附近继续
+TEST(PlayerSeekWhilePaused) {
+  EngineFrameOutput out;
+  Player p(out);
+  p.setAudioSink(std::make_unique<DummyAudioSink>());
+  p.setNoSR(true);
+  p.setConfig(Config::defaults());
+  EXPECT_TRUE(p.open(assetPath("test_long.mp4").c_str()));
+  for (int i = 0; i < 30; i++) { p.pump(); sleepMs(5); }
+
+  p.setPaused(true);
+  p.requestSeek(5.0);
+  for (int i = 0; i < 20; i++) { p.pump(); sleepMs(5); }
+  p.setPaused(false);
+  for (int i = 0; i < 200 && p.position() < 4.5; i++) { p.pump(); sleepMs(5); }
+  EXPECT_TRUE(p.position() >= 4.5);
+  EXPECT_TRUE(p.position() <= 6.0);
+  p.close();
+}
+
+// 连续 seek：worker generation 应丢弃旧帧，位置不能回到 seek 前
+TEST(PlayerSeekGeneration) {
+  EngineFrameOutput out;
+  Player p(out);
+  p.setAudioSink(std::make_unique<DummyAudioSink>());
+  p.setNoSR(true);
+  p.setConfig(Config::defaults());
+  EXPECT_TRUE(p.open(assetPath("test_long.mp4").c_str()));
+  for (int i = 0; i < 30; i++) { p.pump(); sleepMs(5); }
+
+  p.requestSeek(10.0);
+  for (int i = 0; i < 240 && p.position() < 9.0; i++) { p.pump(); sleepMs(5); }
+  EXPECT_TRUE(p.position() >= 9.0);
+
+  p.requestSeek(1.0);
+  for (int i = 0; i < 240 && p.position() > 2.0; i++) { p.pump(); sleepMs(5); }
+  EXPECT_TRUE(p.position() <= 2.0);
   p.close();
 }
 
@@ -199,10 +241,11 @@ TEST(PlayerDropsLateFramesAfterStall) {
   double before = p.position();
   long long framesBefore = p.frameIdx();
   sleepMs(1000);                                            // UI 停摆 1s，不 pump
-  for (int i = 0; i < 3; i++) { p.pump(); sleepMs(5); }      // 恢复
+  // VideoWorker 异步跳过积压帧；给 worker 最多 1s 追上
+  for (int i = 0; i < 200 && p.position() - before < 0.8; i++) { p.pump(); sleepMs(5); }
   double delta = p.position() - before;
   EXPECT_TRUE(delta > 0.8);                                 // 追到当前时钟附近
-  EXPECT_TRUE(p.frameIdx() - framesBefore <= 5);            // 只呈现少量最新帧
+  EXPECT_TRUE(p.frameIdx() - framesBefore <= 8);            // 只呈现少量最新帧
   p.close();
 }
 

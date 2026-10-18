@@ -26,10 +26,11 @@
 - [x] A/V 同步与 PTS（2026-10，见 `docs/plan-av-sync-2026-10.md`）：音频时钟驱动视频、按 PTS 呈现、音频 seek 线程安全、编码保留 29.97/23.976 精确帧率、关闭 B 帧消除 66ms 起点偏移
 - [x] GPU 着色器美颜（2026-10，见 `docs/plan-gpu-beauty-2026-10.md`）：D3D11 HLSL 两遍高斯 + 磨皮/美白/滤镜，Flutter GPU surface 上屏；CPU 路径保留为回退
 - [x] 实时 SR 评估（2026-10，见 `docs/plan-sr-playback-2026-10.md`）：播放页 SR 关闭/1080p/2K/4K 档位 + `domino_sr_bench`；实测 1080p App 21fps、2K 12fps、4K 5.5fps，结论是同步 UI 线程路径不达标
+- [x] SR/解码移出 UI 线程（2026-10，见 `docs/plan-sr-worker-2026-10.md`）：VideoWorker + 2 帧队列 + seek generation + 停摆跳帧；1080p App 提升到 29.6fps
 
 ### 进行中 / 待办（按优先级）
 1. [ ] **任务中心端到端人工验收**：建任务 → 编码 → 进度 → 断点续编 → 边播放（自动化难驱动 Flutter 控件，需人工过一遍）
-2. [ ] **实时 SR 性能化**：把 SR 移出 Flutter UI 线程（原生工作线程/mailbox），再评估 GPU 直通/双帧流水；1080p 当前 21fps，2K/4K 仅适合离线
+2. [ ] **2K/4K 实时 SR 优化**：1080p 已 29.6fps；2K≈15、4K≈5.9fps（低于实时会慢放/音画分离）。下一步评估 GPU 直通/双帧流水、自动降档，2K/4K 暂只建议离线或高端卡手动尝试
 3. [ ] 打包分发：安装包/绿色版、图标、关于页
 4. [ ] 移动端验证：Android/iOS 注入 `AudioSink` 实现（引擎已可移植）
 
