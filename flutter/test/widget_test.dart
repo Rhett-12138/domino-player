@@ -459,12 +459,41 @@ void main() {
 
     await tester.tap(find.byIcon(Icons.fullscreen));
     await tester.pump();
-    final shown = tester.widget<AnimatedOpacity>(find.byType(AnimatedOpacity));
+    final shown = tester.widget<AnimatedOpacity>(find.byType(AnimatedOpacity).last);
     expect(shown.opacity, 1);
 
     await tester.pump(const Duration(seconds: 4));
-    final hidden = tester.widget<AnimatedOpacity>(find.byType(AnimatedOpacity));
+    final hidden = tester.widget<AnimatedOpacity>(find.byType(AnimatedOpacity).last);
     expect(hidden.opacity, 0);
+    await _dispose(tester);
+  });
+
+  testWidgets('播放页：打开的影片进入播放历史侧栏', (WidgetTester tester) async {
+    final engine = FakeEngine();
+    await tester.pumpWidget(MaterialApp(home: PlayerScreen(engine: engine)));
+    await tester.pump();
+    await tester.tap(find.byTooltip('打开文件'));
+    await tester.pump();
+
+    await tester.tap(find.byIcon(Icons.tune));
+    await tester.pump(const Duration(milliseconds: 300));
+    await tester.tap(find.text('播放历史'));
+    await tester.pump();
+    expect(find.text('movie.mp4'), findsWidgets);
+    await _dispose(tester);
+  });
+
+  testWidgets('播放页：选项侧栏包含美化与播放历史', (WidgetTester tester) async {
+    final engine = FakeEngine();
+    await tester.pumpWidget(MaterialApp(home: PlayerScreen(engine: engine)));
+    await tester.pump();
+
+    await tester.tap(find.byIcon(Icons.tune));
+    await tester.pump(const Duration(milliseconds: 300));
+    final panel = tester.widget<AnimatedPositioned>(find.byType(AnimatedPositioned));
+    expect(panel.right, 0);
+    expect(find.text('美化'), findsOneWidget);
+    expect(find.text('播放历史'), findsOneWidget);
     await _dispose(tester);
   });
 

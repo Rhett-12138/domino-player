@@ -9,6 +9,7 @@ import 'package:flutter/services.dart';
 
 import 'core/engine.dart';
 import 'core/format.dart';
+import 'core/history.dart';
 import 'ui/task_center.dart';
 
 void main() {
@@ -27,15 +28,16 @@ class DominoFlutterApp extends StatelessWidget {
             seedColor: const Color(0xFF52A8F2), brightness: Brightness.dark),
         useMaterial3: true,
       ),
-      home: const HomeScreen(),
+      home: HomeScreen(historyPath: PlayHistory.defaultPath()),
     );
   }
 }
 
 class HomeScreen extends StatefulWidget {
-  const HomeScreen({super.key, this.engine});
+  const HomeScreen({super.key, this.engine, this.historyPath});
   /// 可注入引擎（测试用 FakeEngine）；为空时自建 DominoEngine。
   final EngineApi? engine;
+  final String? historyPath;
 
   @override
   State<HomeScreen> createState() => _HomeScreenState();
@@ -103,6 +105,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 PlayerScreen(
                   key: _playerKey,
                   engine: _engine!,
+                  historyPath: widget.historyPath,
                   onFullscreenChanged: (on) {
                     if (mounted && _playerFullscreen != on) {
                       setState(() => _playerFullscreen = on);
@@ -146,8 +149,9 @@ class _HomeScreenState extends State<HomeScreen> {
 }
 
 class PlayerScreen extends StatefulWidget {
-  const PlayerScreen({super.key, required this.engine, this.onFullscreenChanged});
+  const PlayerScreen({super.key, required this.engine, this.historyPath, this.onFullscreenChanged});
   final EngineApi engine;
+  final String? historyPath;
   final ValueChanged<bool>? onFullscreenChanged;
 
   @override
@@ -161,11 +165,15 @@ class PlayerScreenState extends State<PlayerScreen> with SingleTickerProviderSta
   bool _opening = false;
   bool _loop = false; // 播到结尾自动重播（默认关）
   bool _hasVideo = false; // 是否已打开视频（决定显示视频还是占位提示）
-  bool _showBeauty = false; // 是否呼出美颜/滤镜面板（浮层，不占布局）
   bool _fullscreen = false;
   bool _fsControlsVisible = false;
   Timer? _fsHideTimer;
   final FocusNode _fsFocus = FocusNode();
+
+  late final PlayHistory _history;
+  bool _sidePanelOpen = false;
+  int _sideTab = 0; // 0=美化 1=播放历史
+  double _resumeAfterOpen = 0;
 
   String _currentPath = ''; // 当前视频路径（不常显，仅作对话框初始目录与文件名）
   double _smooth = 0.0;
@@ -202,6 +210,10 @@ class PlayerScreenState extends State<PlayerScreen> with SingleTickerProviderSta
     super.initState();
     // 不自动打开视频：由用户点「打开」选择文件
     // 用 Ticker 在每次 vsync 驱动引擎（呈现对齐刷新，比 16ms Timer 平滑）
+    _history = PlayHistory(widget.historyPath);
+    _history.load().then((_) {
+      if (mounted) setState(() {});
+    });
     _ticker = createTicker((_) => _pump())..start();
   }
 
@@ -209,6 +221,9 @@ class PlayerScreenState extends State<PlayerScreen> with SingleTickerProviderSta
   void dispose() {
     _fsHideTimer?.cancel();
     _fsFocus.dispose();
+    if (_currentPath.isNotEmpty && _position > 0) {
+      _history.updatePosition(_currentPath, _position);
+    }
     if (_fullscreen) widget.engine.setFullscreen(false);
     _ticker.dispose();
     for (final im in _previewImgs) {
@@ -322,12 +337,15 @@ class PlayerScreenState extends State<PlayerScreen> with SingleTickerProviderSta
 
   /// 打开指定路径（供"边播放"等外部调用）。
   void openPath(String path) {
+    _saveHistoryPosition();
+    _resumeAfterOpen = 0;
     _currentPath = path;
     _open();
   }
 
   /// 切到其他标签：暂停（避免隐藏后仍有声音），记住原状态。
   void pauseForLeave() {
+    _saveHistoryPosition();
     _wasPlayingBeforeLeave = !widget.engine.paused;
     if (_wasPlayingBeforeLeave) {
       widget.engine.pause();
@@ -349,6 +367,8 @@ class PlayerScreenState extends State<PlayerScreen> with SingleTickerProviderSta
     final e = widget.engine;
     final path = e.openDialog(_currentPath);
     if (path == null || path.isEmpty) return;
+    _saveHistoryPosition();
+    _resumeAfterOpen = 0;
     setState(() => _currentPath = path);
     _open();
   }
@@ -382,9 +402,9 @@ class PlayerScreenState extends State<PlayerScreen> with SingleTickerProviderSta
 
   void _scheduleFsHide() {
     _fsHideTimer?.cancel();
-    if (!_fullscreen || _showBeauty) return;
+    if (!_fullscreen || _sidePanelOpen) return;
     _fsHideTimer = Timer(const Duration(seconds: 3), () {
-      if (!mounted || !_fullscreen || _showBeauty) return;
+      if (!mounted || !_fullscreen || _sidePanelOpen) return;
       setState(() => _fsControlsVisible = false);
     });
   }
@@ -404,6 +424,46 @@ class PlayerScreenState extends State<PlayerScreen> with SingleTickerProviderSta
     return KeyEventResult.ignored;
   }
 
+  void _toggleSidePanel([int? tab]) {
+    setState(() {
+      if (tab != null) {
+        _sidePanelOpen = true;
+        _sideTab = tab;
+      } else {
+        _sidePanelOpen = !_sidePanelOpen;
+        if (_sidePanelOpen) _sideTab = 0;
+      }
+    });
+    if (_sidePanelOpen) {
+      _fsHideTimer?.cancel();
+    } else {
+      _scheduleFsHide();
+    }
+  }
+
+  void _closeSidePanel() {
+    if (!_sidePanelOpen) return;
+    setState(() => _sidePanelOpen = false);
+    _scheduleFsHide();
+  }
+
+  void _saveHistoryPosition() {
+    if (_currentPath.isNotEmpty && _position > 0) {
+      _history.updatePosition(_currentPath, _position);
+    }
+  }
+
+  void _openHistory(PlayHistoryEntry entry) {
+    _saveHistoryPosition();
+    setState(() {
+      _sidePanelOpen = false;
+      _sideTab = 1;
+    });
+    _resumeAfterOpen = entry.position;
+    _currentPath = entry.path;
+    _open();
+  }
+
   void _open() {
     final e = widget.engine;
     if (_currentPath.isEmpty) {
@@ -417,11 +477,14 @@ class PlayerScreenState extends State<PlayerScreen> with SingleTickerProviderSta
     e.close();
     e.setSR(_srTargetW > 0, _srTargetW);
     final ok = e.open(_currentPath);
+    final resume = _resumeAfterOpen;
+    _resumeAfterOpen = 0;
+    if (ok && resume > 0.05) e.seek(resume);
     setState(() {
       _opening = false;
       _hasVideo = ok;
       if (ok) {
-        _position = 0;
+        _position = resume > 0.05 ? resume : 0;
         _duration = e.duration;
         _paused = e.paused;
         _seekDrag = -1.0;
@@ -434,6 +497,7 @@ class PlayerScreenState extends State<PlayerScreen> with SingleTickerProviderSta
         _videoH = 0;
       }
     });
+    if (ok) _history.touch(_currentPath, position: resume > 0.05 ? resume : null);
     if (!ok && mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('打开失败：文件不存在或无法解码')),
@@ -455,52 +519,226 @@ class PlayerScreenState extends State<PlayerScreen> with SingleTickerProviderSta
   Widget build(BuildContext context) {
     final e = widget.engine;
     final video = _buildVideoArea(e);
-    if (!_fullscreen) {
-      return Scaffold(
-        backgroundColor: Colors.black,
-        body: Column(
-          children: [
-            Expanded(child: video),
-            _buildControlBar(e),
-          ],
-        ),
-      );
-    }
-
-    // 沉浸式全屏：只显示视频；鼠标移动时淡入控制条，3 秒后自动隐藏。
+    final content = _fullscreen ? _buildFullscreen(e, video) : _buildNormal(e, video);
     return Scaffold(
       backgroundColor: Colors.black,
-      body: Focus(
-        focusNode: _fsFocus,
-        onKeyEvent: _onFullscreenKey,
-        child: MouseRegion(
-          cursor: _fsControlsVisible ? MouseCursor.defer : SystemMouseCursors.none,
-          onHover: (_) => _showFsControls(),
-          child: Listener(
-            behavior: HitTestBehavior.translucent,
-            onPointerDown: (_) => _showFsControls(),
-            child: Stack(
-              fit: StackFit.expand,
-              children: [
-                video,
-                Positioned(
-                  left: 0,
-                  right: 0,
-                  bottom: 0,
-                  child: AnimatedOpacity(
-                    opacity: _fsControlsVisible ? 1 : 0,
-                    duration: const Duration(milliseconds: 180),
-                    child: IgnorePointer(
-                      ignoring: !_fsControlsVisible,
-                      child: _buildControlBar(e),
-                    ),
+      body: Stack(
+        children: [
+          content,
+          if (_sidePanelOpen)
+            Positioned.fill(
+              child: GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                onTap: _closeSidePanel,
+                child: Container(color: Colors.black45),
+              ),
+            ),
+          AnimatedPositioned(
+            duration: const Duration(milliseconds: 220),
+            curve: Curves.easeOutCubic,
+            top: 0,
+            bottom: 0,
+            width: 400,
+            right: _sidePanelOpen ? 0 : -400,
+            child: IgnorePointer(
+              ignoring: !_sidePanelOpen,
+              child: _buildSidePanel(e),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildNormal(EngineApi e, Widget video) {
+    return Column(
+      children: [
+        _buildPlayerTopBar(e),
+        Expanded(child: video),
+        _buildControlBar(e),
+      ],
+    );
+  }
+
+  Widget _buildFullscreen(EngineApi e, Widget video) {
+    return Focus(
+      focusNode: _fsFocus,
+      onKeyEvent: _onFullscreenKey,
+      child: MouseRegion(
+        cursor: _fsControlsVisible ? MouseCursor.defer : SystemMouseCursors.none,
+        onHover: (_) => _showFsControls(),
+        child: Listener(
+          behavior: HitTestBehavior.translucent,
+          onPointerDown: (_) => _showFsControls(),
+          child: Stack(
+            fit: StackFit.expand,
+            children: [
+              video,
+              Positioned(
+                top: 0,
+                left: 0,
+                right: 0,
+                child: AnimatedOpacity(
+                  opacity: _fsControlsVisible ? 1 : 0,
+                  duration: const Duration(milliseconds: 180),
+                  child: IgnorePointer(
+                    ignoring: !_fsControlsVisible,
+                    child: _buildPlayerTopBar(e, overlay: true),
                   ),
                 ),
-              ],
-            ),
+              ),
+              Positioned(
+                left: 0,
+                right: 0,
+                bottom: 0,
+                child: AnimatedOpacity(
+                  opacity: _fsControlsVisible ? 1 : 0,
+                  duration: const Duration(milliseconds: 180),
+                  child: IgnorePointer(
+                    ignoring: !_fsControlsVisible,
+                    child: _buildControlBar(e),
+                  ),
+                ),
+              ),
+            ],
           ),
         ),
       ),
+    );
+  }
+
+  Widget _buildPlayerTopBar(EngineApi e, {bool overlay = false}) {
+    final name = _currentPath.isEmpty ? '未打开文件' : baseName(_currentPath);
+    return Container(
+      height: 44,
+      padding: const EdgeInsets.only(left: 12, right: 6),
+      color: overlay ? Colors.black54 : const Color(0xFF1B1D25),
+      child: Row(
+        children: [
+          const Icon(Icons.movie_outlined, size: 18, color: Colors.white54),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              name,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(fontSize: 13, color: Colors.white70),
+            ),
+          ),
+          Tooltip(
+            message: '打开文件',
+            child: TextButton.icon(
+              onPressed: _pickAndOpen,
+              icon: const Icon(Icons.folder_open, size: 18),
+              label: const Text('打开'),
+            ),
+          ),
+          IconButton(
+            tooltip: _fullscreen ? '退出全屏' : '全屏',
+            icon: Icon(_fullscreen ? Icons.fullscreen_exit : Icons.fullscreen),
+            color: _fullscreen ? Colors.lightBlueAccent : Colors.white54,
+            onPressed: _toggleFullscreen,
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildSidePanel(EngineApi e) {
+    return Container(
+      decoration: const BoxDecoration(
+        color: Color(0xF01B1D25),
+        border: Border(left: BorderSide(color: Colors.white12)),
+        boxShadow: [BoxShadow(color: Colors.black54, blurRadius: 18)],
+      ),
+      child: Column(
+        children: [
+          Row(
+            children: [
+              const SizedBox(width: 14),
+              const Expanded(
+                child: Text('选项', style: TextStyle(fontWeight: FontWeight.bold)),
+              ),
+              IconButton(
+                tooltip: '关闭',
+                icon: const Icon(Icons.close, size: 19),
+                onPressed: _closeSidePanel,
+              ),
+            ],
+          ),
+          Row(
+            children: [
+              Expanded(
+                child: TextButton(
+                  onPressed: () => setState(() => _sideTab = 0),
+                  child: Text('美化',
+                      style: TextStyle(
+                          color: _sideTab == 0 ? Colors.lightBlueAccent : Colors.white54)),
+                ),
+              ),
+              Expanded(
+                child: TextButton(
+                  onPressed: () => setState(() => _sideTab = 1),
+                  child: Text('播放历史',
+                      style: TextStyle(
+                          color: _sideTab == 1 ? Colors.lightBlueAccent : Colors.white54)),
+                ),
+              ),
+            ],
+          ),
+          const Divider(height: 1),
+          Expanded(
+            child: _sideTab == 0
+                ? SingleChildScrollView(
+                    padding: const EdgeInsets.fromLTRB(10, 8, 10, 12),
+                    child: _buildBeautyPanel(e),
+                  )
+                : _buildHistoryPanel(),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildHistoryPanel() {
+    if (_history.entries.isEmpty) {
+      return const Center(
+        child: Text('暂无播放历史', style: TextStyle(color: Colors.white38, fontSize: 13)),
+      );
+    }
+    return Column(
+      children: [
+        Expanded(
+          child: ListView.separated(
+            padding: const EdgeInsets.symmetric(vertical: 4),
+            itemCount: _history.entries.length,
+            separatorBuilder: (_, __) => const Divider(height: 1),
+            itemBuilder: (_, i) {
+              final h = _history.entries[i];
+              return ListTile(
+                dense: true,
+                leading: const Icon(Icons.history, size: 19),
+                title: Text(h.name, maxLines: 1, overflow: TextOverflow.ellipsis),
+                subtitle: Text(
+                  '${h.position > 0 ? '上次 ${_fmt(h.position)}' : '未播放'}  ·  ${h.path}',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(fontSize: 11, color: Colors.white38),
+                ),
+                onTap: () => _openHistory(h),
+              );
+            },
+          ),
+        ),
+        TextButton.icon(
+          onPressed: () {
+            _history.clear();
+            setState(() {});
+          },
+          icon: const Icon(Icons.delete_sweep_outlined, size: 17),
+          label: const Text('清空历史'),
+        ),
+      ],
     );
   }
 
@@ -541,8 +779,8 @@ class PlayerScreenState extends State<PlayerScreen> with SingleTickerProviderSta
         // FPS 移到右上角；全屏控制条隐藏时一并隐藏，保持沉浸感。
         if (_hasVideo && (!_fullscreen || _fsControlsVisible))
           Positioned(
-            top: 12,
-            right: 12,
+            top: _fullscreen && _fsControlsVisible ? 56 : 12,
+            left: 12,
             child: Container(
               padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
               decoration: BoxDecoration(
@@ -551,13 +789,6 @@ class PlayerScreenState extends State<PlayerScreen> with SingleTickerProviderSta
               ),
               child: Text('${_fps} FPS', style: const TextStyle(fontSize: 13, color: Colors.white70)),
             ),
-          ),
-        if (_showBeauty)
-          Positioned(
-            left: 8,
-            right: 8,
-            bottom: 8,
-            child: _buildBeautyPanel(e),
           ),
       ],
     );
@@ -568,167 +799,118 @@ class PlayerScreenState extends State<PlayerScreen> with SingleTickerProviderSta
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
       color: const Color(0xFF1B1D25),
-      child: Column(
-        children: [
-          LayoutBuilder(builder: (context, constraints) {
-            return SingleChildScrollView(
-              scrollDirection: Axis.horizontal,
-              child: SizedBox(
-                width: constraints.maxWidth < 760 ? 760.0 : constraints.maxWidth,
-                child: Row(
-                  children: [
-              IconButton(
-                tooltip: _paused ? '播放' : '暂停',
-                icon: Icon(_paused ? Icons.play_arrow : Icons.pause),
-                onPressed: () {
-                  if (_paused) {
-                    e.play();
-                  } else {
-                    e.pause();
-                  }
-                },
-              ),
-              IconButton(
-                tooltip: _loop ? '循环播放：开' : '循环播放：关',
-                icon: const Icon(Icons.repeat),
-                color: _loop ? Colors.lightBlueAccent : Colors.white54,
-                onPressed: () => setState(() => _loop = !_loop),
-              ),
-              IconButton(
-                tooltip: '美颜 / 滤镜',
-                icon: const Icon(Icons.auto_fix_high),
-                color: _showBeauty ? Colors.lightBlueAccent : Colors.white54,
-                onPressed: () {
-                  setState(() => _showBeauty = !_showBeauty);
-                  if (_showBeauty) {
-                    _previewDirty = true; // 呼出时刷新缩略图
-                    _fsHideTimer?.cancel();
-                  } else {
-                    _scheduleFsHide();
-                  }
-                },
-              ),
-              IconButton(
-                tooltip: _fullscreen ? '退出全屏' : '全屏',
-                icon: Icon(_fullscreen ? Icons.fullscreen_exit : Icons.fullscreen),
-                color: _fullscreen ? Colors.lightBlueAccent : Colors.white54,
-                onPressed: _toggleFullscreen,
-              ),
-              Flexible(
-                child: PopupMenuButton<int>(
-                tooltip: '实时超分',
-                initialValue: _srTargetW,
-                onSelected: (v) {
-                  setState(() {
-                    _srTargetW = v;
-                    _srActualTargetW = v;
-                    _srFailed = false;
-                    _srAutoDegraded = false;
-                  });
-                  e.setSR(v > 0, v);
-                },
-                itemBuilder: (ctx) => const [
-                  PopupMenuItem(value: 0, child: Text('超分：关闭')),
-                  PopupMenuItem(value: 1920, child: Text('超分：1080p')),
-                  PopupMenuItem(value: 2560, child: Text('超分：2K')),
-                  PopupMenuItem(value: 3840, child: Text('超分：4K')),
-                ],
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 6),
-                  child: Text(
-                    _srFailed ? 'SR 失败' : _srLabel,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: TextStyle(
-                      fontSize: 12,
-                      color: _srFailed
-                          ? Colors.redAccent
-                          : _srAutoDegraded
-                              ? Colors.orangeAccent
-                              : (_srActualTargetW > 0 ? Colors.lightBlueAccent : Colors.white54),
+      child: LayoutBuilder(builder: (context, constraints) {
+        final width = constraints.maxWidth < 680 ? 680.0 : constraints.maxWidth;
+        return SingleChildScrollView(
+          scrollDirection: Axis.horizontal,
+          child: SizedBox(
+            width: width,
+            child: Row(
+              children: [
+                IconButton(
+                  tooltip: _paused ? '播放' : '暂停',
+                  icon: Icon(_paused ? Icons.play_arrow : Icons.pause),
+                  onPressed: () {
+                    if (_paused) {
+                      e.play();
+                    } else {
+                      e.pause();
+                      _saveHistoryPosition();
+                    }
+                  },
+                ),
+                IconButton(
+                  tooltip: _loop ? '循环播放：开' : '循环播放：关',
+                  icon: const Icon(Icons.repeat),
+                  color: _loop ? Colors.lightBlueAccent : Colors.white54,
+                  onPressed: () => setState(() => _loop = !_loop),
+                ),
+                IconButton(
+                  tooltip: '选项：美化 / 播放历史',
+                  icon: const Icon(Icons.tune),
+                  color: _sidePanelOpen ? Colors.lightBlueAccent : Colors.white54,
+                  onPressed: () => _toggleSidePanel(),
+                ),
+                Flexible(
+                  child: PopupMenuButton<int>(
+                    tooltip: '实时超分',
+                    initialValue: _srTargetW,
+                    onSelected: (v) {
+                      setState(() {
+                        _srTargetW = v;
+                        _srActualTargetW = v;
+                        _srFailed = false;
+                        _srAutoDegraded = false;
+                      });
+                      e.setSR(v > 0, v);
+                    },
+                    itemBuilder: (ctx) => const [
+                      PopupMenuItem(value: 0, child: Text('超分：关闭')),
+                      PopupMenuItem(value: 1920, child: Text('超分：1080p')),
+                      PopupMenuItem(value: 2560, child: Text('超分：2K')),
+                      PopupMenuItem(value: 3840, child: Text('超分：4K')),
+                    ],
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 6),
+                      child: Text(
+                        _srFailed ? 'SR 失败' : _srLabel,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: _srFailed
+                              ? Colors.redAccent
+                              : _srAutoDegraded
+                                  ? Colors.orangeAccent
+                                  : (_srActualTargetW > 0
+                                      ? Colors.lightBlueAccent
+                                      : Colors.white54),
+                        ),
+                      ),
                     ),
                   ),
                 ),
-                ),
-              ),
-              const SizedBox(width: 8),
-              if (_currentPath.isNotEmpty)
-                ConstrainedBox(
-                  constraints: const BoxConstraints(maxWidth: 120),
-                  child: Text(
-                    baseName(_currentPath),
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(fontSize: 12, color: Colors.white60),
+                const SizedBox(width: 8),
+                Text('${_fmt(shownPos)} / ${_fmt(_duration)}'),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Slider(
+                    value: _duration > 0 ? (shownPos / _duration).clamp(0.0, 1.0) : 0.0,
+                    onChanged: (v) => setState(() => _seekDrag = v * _duration),
+                    onChangeEnd: (v) {
+                      e.seek(v * _duration);
+                      _history.updatePosition(_currentPath, v * _duration);
+                      setState(() => _seekDrag = -1.0);
+                    },
                   ),
                 ),
-              const SizedBox(width: 8),
-              Text('${_fmt(shownPos)} / ${_fmt(_duration)}'),
-              const SizedBox(width: 8),
-              Expanded(
-                child: Slider(
-                  value: _duration > 0 ? (shownPos / _duration).clamp(0.0, 1.0) : 0.0,
-                  onChanged: (v) => setState(() => _seekDrag = v * _duration),
-                  onChangeEnd: (v) {
-                    e.seek(v * _duration);
-                    setState(() => _seekDrag = -1.0);
-                  },
+                const SizedBox(width: 8),
+                const Icon(Icons.volume_up, size: 18),
+                const SizedBox(width: 4),
+                SizedBox(
+                  width: 150,
+                  child: Slider(
+                    value: _volume,
+                    onChanged: (v) {
+                      setState(() => _volume = v);
+                      e.setVolume(v);
+                    },
+                  ),
                 ),
-              ),
-              const Icon(Icons.volume_up, size: 18),
-              const SizedBox(width: 4),
-              SizedBox(
-                width: 96,
-                child: Slider(
-                  value: _volume,
-                  onChanged: (v) {
-                    setState(() => _volume = v);
-                    e.setVolume(v);
-                  },
-                ),
-              ),
-              Text('${(_volume * 100).round()}%'),
-              IconButton(
-                tooltip: '打开文件',
-                icon: const Icon(Icons.folder_open),
-                onPressed: _pickAndOpen,
-              ),
-                  ],
-                ),
-              ),
-            );
-          }),
-        ],
-      ),
+                const SizedBox(width: 4),
+                Text('${(_volume * 100).round()}%'),
+              ],
+            ),
+          ),
+        );
+      }),
     );
   }
 
   Widget _buildBeautyPanel(EngineApi e) {
-    return Container(
-      padding: const EdgeInsets.fromLTRB(12, 4, 12, 10),
-      decoration: BoxDecoration(
-        color: const Color(0xF014151C),
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: Colors.white12),
-      ),
-      child: Column(
+    return Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Row(
-            children: [
-              const Icon(Icons.auto_fix_high, size: 18, color: Colors.white70),
-              const SizedBox(width: 6),
-              const Text('美颜 / 滤镜', style: TextStyle(fontWeight: FontWeight.bold)),
-              const Spacer(),
-              IconButton(
-                tooltip: '关闭',
-                icon: const Icon(Icons.close, size: 18),
-                onPressed: () {
-                  setState(() => _showBeauty = false);
-                  _scheduleFsHide();
-                },
-              ),
-            ],
-          ),
           Row(
             children: [
               const Text('磨皮'),
@@ -812,7 +994,6 @@ class PlayerScreenState extends State<PlayerScreen> with SingleTickerProviderSta
             ),
           ),
         ],
-      ),
-    );
+      );
   }
 }
