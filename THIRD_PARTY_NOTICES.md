@@ -7,8 +7,10 @@
 | [FFmpeg](https://ffmpeg.org/) | 解码 / 编码 / 封装 | **GPLv3**（本项目使用 `gpl-shared` 预编译版） | `libs/ffmpeg/`（本地放置，**未提交**） |
 | [NCNN](https://github.com/Tencent/ncnn) | Vulkan 推理（超分） | BSD-3-Clause | `libs/ncnn/`（本地放置，**未提交**） |
 | [Flutter](https://flutter.dev/) | 前端框架 | BSD-3-Clause | `flutter/` |
-| [RealESRGAN_General_x4_v3](https://github.com/xinntao/Real-ESRGAN) | 通用 4x 超分模型 | BSD-3-Clause | `assets/models/sr/ncnn/` |
-| [realesr-animevideov3-x4](https://github.com/xinntao/Real-ESRGAN) | 动漫视频 4x 超分模型 | BSD-3-Clause | `assets/models/sr/ncnn/` |
+| [RealESRGAN_General_x4_v3](https://github.com/xinntao/Real-ESRGAN) | 真人/实拍标准 4x 超分模型 | BSD-3-Clause | `assets/models/sr/ncnn/` |
+| [realesr-animevideov3-x2 / x3 / x4](https://github.com/xinntao/Real-ESRGAN) | 动画标准 2x / 3x / 4x 超分模型 | BSD-3-Clause | `assets/models/sr/ncnn/` |
+| [realesrgan-x4plus](https://github.com/xinntao/Real-ESRGAN) | 真人/实拍高质量 4x 超分模型 | BSD-3-Clause | `assets/models/sr/ncnn/` |
+| [realesrgan-x4plus-anime](https://github.com/xinntao/Real-ESRGAN) | 动画高质量 4x 超分模型 | BSD-3-Clause | `assets/models/sr/ncnn/` |
 | [MediaPipe face_landmarker](https://developers.google.com/mediapipe) | 人脸关键点（规划中） | Apache-2.0 | `assets/models/face_landmarker.task` |
 
 ## ⚠️ 分发注意（FFmpeg GPL）
