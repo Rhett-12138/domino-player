@@ -101,6 +101,36 @@ TEST(EncodeFullNoSR) {
   EXPECT_TRUE(encodeOffline(assetPath("test_av.mp4").c_str(), out.c_str(), 1280, eo));
   EXPECT_NEAR(probeDuration(out.c_str()), 2.0, 0.3);
 }
+// SR 流水线的预览回调仍按输出尺寸、逐帧调用；不会影响编码帧数
+TEST(EncodePreviewSR) {
+  std::string out = tempOut("encode_sr_preview.mp4");
+  std::error_code ec;
+  std::filesystem::remove(out, ec);
+  int previews = 0;
+  int previewW = 0;
+  int previewH = 0;
+  EncodeOptions eo;
+  eo.verbose = false;
+  eo.modelBase = Config::defaults().modelBase;
+  eo.srInput = SRInputQuality::Fast;
+  eo.preview = [](const uint8_t*, int w, int h, void* ud) {
+    auto* state = static_cast<int*>(ud);
+    state[0]++;
+    state[1] = w;
+    state[2] = h;
+  };
+  int previewState[3] = { 0, 0, 0 };
+  eo.previewUserdata = previewState;
+  EXPECT_TRUE(encodeOffline(assetPath("test_2997.mp4").c_str(), out.c_str(), 640, eo));
+  previews = previewState[0];
+  previewW = previewState[1];
+  previewH = previewState[2];
+  EXPECT_TRUE(previews >= 50);
+  EXPECT_EQ(previewW, 640);
+  EXPECT_EQ(previewH, 360);
+  EXPECT_NEAR(probeDuration(out.c_str()), probeDuration(assetPath("test_2997.mp4").c_str()), 0.1);
+}
+
 // 非整数帧率：29.97 源编码后仍应保持 30000/1001，不能被取整成 30fps
 TEST(EncodeNonIntegerFps) {
   std::string src = assetPath("test_2997.mp4");

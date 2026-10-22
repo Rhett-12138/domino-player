@@ -42,6 +42,7 @@
 - **断点续编**：取消或失败后保留续编分段，下次启动先合并再继续；主文件替换有备份和回滚。
 - **编码设置**：输出 MP4 / fMP4，`faststart`；x264 CRF18 + preset slow，关闭 B 帧并启用 `zerolatency`，避免 fMP4 音视频起点偏移。
 - **输出质量**：默认高质量 FullSource 输入（源分辨率，最高 1920 宽），4x 模型推理后用 Lanczos 缩放到目标分辨率；高质量模型档细节更好但更慢。
+- **离线流水线**：SR 跑在独立 worker，与解码、Lanczos 缩放和 x264 编码重叠；使用 2 帧有界队列和源帧缓冲池，按 FIFO 取回保证 PTS 顺序。NCNN 启用 FP16 算术、cooperative matrix 和 shader local memory（不支持时自动回退；设置 `DOMINO_NO_VULKAN_FASTPATH=1` 可关闭快路径）。
 
 ### 模型库
 

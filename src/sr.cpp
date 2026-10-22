@@ -1,11 +1,20 @@
 #include "sr.h"
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 
 bool SR::init(const char* paramPath, const char* binPath) {
   net_.opt.use_vulkan_compute = true;
   net_.opt.use_fp16_packed = true;
   net_.opt.use_fp16_storage = true;
+  // 对支持的 Vulkan 设备启用 FP16 算术、cooperative matrix 和共享内存优化；
+  // 不支持的驱动会由 NCNN 自动回退到普通路径。可用环境变量关闭快路径排查驱动问题。
+  const char* noFast = std::getenv("DOMINO_NO_VULKAN_FASTPATH");
+  if (!(noFast && noFast[0] && std::strcmp(noFast, "0") != 0)) {
+    net_.opt.use_fp16_arithmetic = true;
+    net_.opt.use_cooperative_matrix = true;
+    net_.opt.use_shader_local_memory = true;
+  }
   if (net_.load_param(paramPath) != 0 || net_.load_model(binPath) != 0) return false;
   ready_ = true;
   return true;

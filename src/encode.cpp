@@ -8,6 +8,9 @@
 #include <deque>
 #include <chrono>
 #include <filesystem>
+#include <condition_variable>
+#include <mutex>
+#include <thread>
 
 extern "C" {
 #include <libavcodec/avcodec.h>
@@ -216,9 +219,10 @@ bool encodeOffline(const char* srcPath, const char* outPath, int targetW, const 
     }
     prevRgb.resize((size_t)outW * outH * 3);
   }
-  std::vector<uint8_t> rgb((size_t)srcW * srcH * 3);
-  std::vector<uint8_t> srgb;
+  const size_t srcBytes = (size_t)srcW * srcH * 3;
+  std::vector<uint8_t> rgb(srcBytes);
   std::vector<uint8_t> yuv((size_t)outW * outH * 3 / 2);
+  std::vector<std::vector<uint8_t>> freeSrc;
 
   long long count = 0;
   long long srFallbackCount = 0;
@@ -283,59 +287,83 @@ bool encodeOffline(const char* srcPath, const char* outPath, int targetW, const 
     }
   };
 
-  auto encodeDecodedFrame = [&](AVFrame* frame) {
-    // 断点续编：跳过检查点之前的帧（仅解码预热，不重编码）
-    if (startTime > 0) {
-      double ft = frame->best_effort_timestamp * av_q2d(vs->time_base);
-      if (ft < startTime) return;
-    }
-    uint8_t* d0[1] = { rgb.data() };
-    int dl0[1] = { srcW * 3 };
-    sws_scale(swsIn.p, frame->data, frame->linesize, 0, srcH, d0, dl0);
-
-    int sw = needSR ? sr.process(rgb.data(), srcW, srcH, inW, srgb) : srcW;
-    int sh = srcH;
-    uint8_t* sp = rgb.data();
-    SwsContext* yuvSws = swsOut.p;
+  // SR 与解码/缩放/编码流水线：主线程继续解码、写音频和编码，SR 在独立线程
+  // 运行。结果按 FIFO 取回，保证视频 PTS 顺序不变。
+  struct SrJob {
+    std::vector<uint8_t> src;
+    int w;
+    int h;
+    double ft;
+  };
+  struct SrResult {
+    std::vector<uint8_t> src;
+    std::vector<uint8_t> rgb;
+    int w = 0;
+    int h = 0;
+    int srRet = 0;
     bool fallback = false;
-    if (needSR) {
-      if (sw > 0) {
-        sh = (int)(srgb.size() / (size_t)sw / 3);
-        sp = srgb.data();
-      }
-      if (sw <= 0) {
-        // 大图分配/推理失败：不能丢帧（否则 PTS 前移、任务假完成），回退源帧并最终判失败
-        logx::error("offline SR failed: sw=%d expected=%dx%d; fallback source", sw, encInW, encInH);
+    double ft = 0;
+  };
+
+  const size_t kMaxSrQueue = 2;
+  std::mutex srMu;
+  std::condition_variable srCv;
+  std::deque<SrJob> srJobs;
+  std::deque<SrResult> srResults;
+  bool srStop = false;
+  bool srAbort = false;
+  std::thread srThread;
+
+  auto acquireSrc = [&] {
+    if (!freeSrc.empty()) {
+      auto b = std::move(freeSrc.back());
+      freeSrc.pop_back();
+      if (b.size() != srcBytes) b.resize(srcBytes);
+      return b;
+    }
+    return std::vector<uint8_t>(srcBytes);
+  };
+
+  auto encodeResult = [&](SrResult r) {
+    int sw = r.w;
+    int sh = r.h;
+    uint8_t* sp = r.rgb.empty() ? r.src.data() : r.rgb.data();
+    SwsContext* yuvSws = swsOut.p;
+    bool fallback = r.fallback;
+
+    if (fallback) {
+      // SR 失败不能丢帧：回退源帧，最终任务会判失败
+      logx::error("offline SR failed: sw=%d expected=%dx%d; fallback source",
+                  r.srRet, encInW, encInH);
+      srFallbackCount++;
+      sw = srcW;
+      sh = srcH;
+      sp = r.src.data();
+      yuvSws = swsFallback.p;
+    } else if (sw != curSwsW || sh != curSwsH) {
+      // Real-CUGAN 等模型会裁掉边缘（输出比 scale*input 小），按实际尺寸重建缩放
+      if (swsOut.p) sws_freeContext(swsOut.p);
+      swsOut.p = sws_getContext(sw, sh, AV_PIX_FMT_RGB24, outW, outH, AV_PIX_FMT_YUV420P,
+                                SWS_LANCZOS, nullptr, nullptr, nullptr);
+      if (!swsOut.p) {
+        logx::error("dynamic output sws failed: %dx%d -> %dx%d", sw, sh, outW, outH);
         srFallbackCount++;
         sw = srcW;
         sh = srcH;
-        sp = rgb.data();
+        sp = r.src.data();
         yuvSws = swsFallback.p;
         fallback = true;
-      } else if (sw != curSwsW || sh != curSwsH) {
-        // Real-CUGAN 等模型会裁掉边缘（输出比 scale*input 小），按实际尺寸重建缩放器
-        if (swsOut.p) sws_freeContext(swsOut.p);
-        swsOut.p = sws_getContext(sw, sh, AV_PIX_FMT_RGB24, outW, outH, AV_PIX_FMT_YUV420P,
-                                  SWS_LANCZOS, nullptr, nullptr, nullptr);
-        if (!swsOut.p) {
-          logx::error("dynamic output sws failed: %dx%d -> %dx%d", sw, sh, outW, outH);
-          srFallbackCount++;
-          sw = srcW;
-          sh = srcH;
-          sp = rgb.data();
-          yuvSws = swsFallback.p;
-          fallback = true;
-        } else {
-          if (opts.preview) {
-            if (swsPrev.p) sws_freeContext(swsPrev.p);
-            swsPrev.p = sws_getContext(sw, sh, AV_PIX_FMT_RGB24, outW, outH, AV_PIX_FMT_RGB24,
-                                       SWS_BILINEAR, nullptr, nullptr, nullptr);
-          }
-          curSwsW = sw;
-          curSwsH = sh;
+      } else {
+        if (opts.preview) {
+          if (swsPrev.p) sws_freeContext(swsPrev.p);
+          swsPrev.p = sws_getContext(sw, sh, AV_PIX_FMT_RGB24, outW, outH, AV_PIX_FMT_RGB24,
+                                     SWS_BILINEAR, nullptr, nullptr, nullptr);
         }
+        curSwsW = sw;
+        curSwsH = sh;
       }
     }
+
     int sl[1] = { sw * 3 };
     if (opts.preview) {
       if (sw != outW || sh != outH) {
@@ -350,6 +378,7 @@ bool encodeOffline(const char* srcPath, const char* outPath, int targetW, const 
         opts.preview(sp, outW, outH, opts.previewUserdata);
       }
     }
+
     size_t ysize = (size_t)outW * outH;
     uint8_t* d[3] = { yuv.data(), yuv.data() + ysize, yuv.data() + ysize + ysize / 4 };
     int ds[3] = { outW, outW / 2, outW / 2 };
@@ -360,7 +389,168 @@ bool encodeOffline(const char* srcPath, const char* outPath, int targetW, const 
     f.p->format = ectx.p->pix_fmt;
     f.p->width = outW;
     f.p->height = outH;
-    f.p->pts = startFrame + count;  // 续编时帧号延续
+    f.p->pts = startFrame + count;  // 续编时帧号延后
+    av_image_fill_arrays(f.p->data, f.p->linesize, yuv.data(), AV_PIX_FMT_YUV420P, outW, outH, 1);
+    int sret = avcodec_send_frame(ectx.p, f.p);
+    while (sret == AVERROR(EAGAIN)) {
+      drainEncoder();
+      sret = avcodec_send_frame(ectx.p, f.p);
+    }
+    if (sret == 0) drainEncoder();
+    count++;
+    if (prog) {
+      prog->frame.store(count + startFrame);
+      if (r.ft > 0) prog->curTime.store(r.ft);  // 检查点：最近帧的源时间
+      double el = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+      if (el > 0.5) prog->fps.store(count / el);
+      // 周期持久化断点（约每 1s），应用被杀后仍可续编
+      auto now = std::chrono::steady_clock::now();
+      if (prog->checkpointCb && std::chrono::duration<double>(now - lastCheck).count() >= 1.0) {
+        lastCheck = now;
+        prog->checkpointCb();
+      }
+    }
+    if (verbose && count % 30 == 0) {
+      double el = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+      printf("encoded %lld frames (%.1f fps)\n", count, count / el);
+    }
+
+    // 源帧缓冲回到主线程池，避免每帧重新分配大块 RGB 内存
+    if (r.src.size() == srcBytes) freeSrc.push_back(std::move(r.src));
+  };
+
+  auto drainSr = [&] {
+    for (;;) {
+      SrResult r;
+      {
+        std::lock_guard<std::mutex> lk(srMu);
+        if (srResults.empty()) break;
+        r = std::move(srResults.front());
+        srResults.pop_front();
+      }
+      encodeResult(std::move(r));
+    }
+  };
+
+  auto submitFrame = [&](AVFrame* frame) -> bool {
+    double ft = 0;
+    if (frame->best_effort_timestamp != AV_NOPTS_VALUE) {
+      ft = frame->best_effort_timestamp * av_q2d(vs->time_base);
+    }
+    // 断点续编：跳过检查点之前的帧（仅解码预热，不重编码）
+    if (startTime > 0 && ft < startTime) return true;
+
+    uint8_t* d0[1] = { rgb.data() };
+    int dl0[1] = { srcW * 3 };
+    sws_scale(swsIn.p, frame->data, frame->linesize, 0, srcH, d0, dl0);
+
+    SrJob job{ std::move(rgb), srcW, srcH, ft };
+    rgb = acquireSrc();
+    for (;;) {
+      drainSr();
+      if (prog && prog->cancel.load()) {
+        cancelled = true;
+        return false;
+      }
+      if (writeError) return false;
+
+      std::unique_lock<std::mutex> lk(srMu);
+      if (srAbort) return false;
+      if (srJobs.size() < kMaxSrQueue) {
+        srJobs.push_back(std::move(job));
+        lk.unlock();
+        srCv.notify_all();
+        return true;
+      }
+      // 队列满时等待 SR 取走一帧；超时后回头 drain 已完成的结果
+      srCv.wait_for(lk, std::chrono::milliseconds(10));
+    }
+  };
+
+  auto finishSr = [&](bool abort) {
+    if (!needSR) return;
+    {
+      std::lock_guard<std::mutex> lk(srMu);
+      srAbort = abort;
+      srStop = !abort;
+    }
+    srCv.notify_all();
+    if (srThread.joinable()) srThread.join();
+    if (!abort) {
+      drainSr();
+    } else {
+      std::lock_guard<std::mutex> lk(srMu);
+      srJobs.clear();
+      srResults.clear();
+    }
+    sr.clear();
+  };
+
+  if (needSR) {
+    srThread = std::thread([&] {
+      for (;;) {
+        SrJob job;
+        {
+          std::unique_lock<std::mutex> lk(srMu);
+          srCv.wait(lk, [&] {
+            return srAbort || !srJobs.empty() || (srStop && srJobs.empty());
+          });
+          if (srAbort || (srStop && srJobs.empty())) break;
+          job = std::move(srJobs.front());
+          srJobs.pop_front();
+        }
+        srCv.notify_all();  // 让 submit 继续投递下一帧
+
+        SrResult res;
+        res.ft = job.ft;
+        res.src = std::move(job.src);
+        const int sw = sr.process(res.src.data(), job.w, job.h, inW, res.rgb);
+        res.srRet = sw;
+        if (sw > 0) {
+          res.w = sw;
+          res.h = (int)(res.rgb.size() / (size_t)sw / 3);
+        } else {
+          res.w = job.w;
+          res.h = job.h;
+          res.fallback = true;
+        }
+        {
+          std::lock_guard<std::mutex> lk(srMu);
+          srResults.push_back(std::move(res));
+        }
+        srCv.notify_all();
+      }
+    });
+  }
+
+  // 无 SR 时沿用同步编码；needSR 走上面的并发 SR 流水线。
+  auto encodeDecodedFrame = [&](AVFrame* frame) {
+    // 断点续编：跳过检查点之前的帧（仅解码预热，不重编码）
+    if (startTime > 0) {
+      double ft = frame->best_effort_timestamp * av_q2d(vs->time_base);
+      if (ft < startTime) return;
+    }
+    uint8_t* d0[1] = { rgb.data() };
+    int dl0[1] = { srcW * 3 };
+    sws_scale(swsIn.p, frame->data, frame->linesize, 0, srcH, d0, dl0);
+
+    const int sw = srcW;
+    const int sh = srcH;
+    uint8_t* sp = rgb.data();
+    int sl[1] = { sw * 3 };
+    if (opts.preview) opts.preview(sp, outW, outH, opts.previewUserdata);
+
+    size_t ysize = (size_t)outW * outH;
+    uint8_t* d[3] = { yuv.data(), yuv.data() + ysize, yuv.data() + ysize + ysize / 4 };
+    int ds[3] = { outW, outW / 2, outW / 2 };
+    sws_scale(swsOut.p, &sp, sl, 0, sh, d, ds);
+
+    FrameGuard f;
+    f.p = av_frame_alloc();
+    f.p->format = ectx.p->pix_fmt;
+    f.p->width = outW;
+    f.p->height = outH;
+    f.p->pts = startFrame + count;  // 续编时帧号延后
     av_image_fill_arrays(f.p->data, f.p->linesize, yuv.data(), AV_PIX_FMT_YUV420P, outW, outH, 1);
     int sret = avcodec_send_frame(ectx.p, f.p);
     while (sret == AVERROR(EAGAIN)) {
@@ -387,13 +577,23 @@ bool encodeOffline(const char* srcPath, const char* outPath, int targetW, const 
       printf("encoded %lld frames (%.1f fps)\n", count, count / el);
     }
   };
-
-  auto drainDecoder = [&] {
-    while (avcodec_receive_frame(vctx.p, fr.p) == 0) encodeDecodedFrame(fr.p);
+  auto drainDecoder = [&]() -> bool {
+    while (avcodec_receive_frame(vctx.p, fr.p) == 0) {
+      if (needSR) {
+        if (!submitFrame(fr.p)) return false;
+      } else {
+        encodeDecodedFrame(fr.p);
+      }
+    }
+    return true;
   };
 
   while (av_read_frame(sf.p, ipkt.p) >= 0) {
-    if (prog && prog->cancel.load()) { cancelled = true; break; }
+    if (prog && prog->cancel.load()) {
+      cancelled = true;
+      break;
+    }
+    if (writeError) break;
     if (ipkt.p->stream_index == vsi) {
       int sret = avcodec_send_packet(vctx.p, ipkt.p);
       while (sret == AVERROR(EAGAIN)) {
@@ -408,10 +608,17 @@ bool encodeOffline(const char* srcPath, const char* outPath, int targetW, const 
           logx::error("decoder receive failed: %d", r);
           break;
         }
-        encodeDecodedFrame(fr.p);
+        if (needSR) {
+          if (!submitFrame(fr.p)) {
+            if (!writeError) cancelled = true;
+            break;
+          }
+        } else {
+          encodeDecodedFrame(fr.p);
+        }
         sret = avcodec_send_packet(vctx.p, ipkt.p);
       }
-      if (sret == 0) drainDecoder();
+      if (sret == 0 && !drainDecoder() && !writeError) cancelled = true;
     } else if (oas && ipkt.p->stream_index == asi) {
       double at = ipkt.p->pts != AV_NOPTS_VALUE ? ipkt.p->pts * av_q2d(sf.p->streams[asi]->time_base) : 0;
       // 视频起点之前的音频不写入，避免输出负时间戳
@@ -454,10 +661,11 @@ bool encodeOffline(const char* srcPath, const char* outPath, int targetW, const 
   // flush 解码器 + 编码器
   int dret = avcodec_send_packet(vctx.p, nullptr);
   while (dret == AVERROR(EAGAIN)) {
-    drainDecoder();
+    if (!drainDecoder() && !writeError) cancelled = true;
     dret = avcodec_send_packet(vctx.p, nullptr);
   }
-  if (dret == 0) drainDecoder();
+  if (dret == 0 && !drainDecoder() && !writeError) cancelled = true;
+  finishSr(cancelled || writeError);
   int eret = avcodec_send_frame(ectx.p, nullptr);
   while (eret == AVERROR(EAGAIN)) {
     drainEncoder();
@@ -473,7 +681,6 @@ bool encodeOffline(const char* srcPath, const char* outPath, int targetW, const 
     count, count / el, outW, outH, oas ? 1 : 0, srFallbackCount, outPath);
   if (prog) { prog->fps.store(count / el); prog->done.store(true); prog->success.store(ok); }
 
-  if (needSR) sr.clear();   // 全局 GPU 实例由前端统一管理
   return ok;
 }
 
