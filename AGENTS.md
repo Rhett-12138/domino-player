@@ -99,7 +99,7 @@ flutter run -d windows             # 开发运行（热重载）
 - **任务质量档要持久化**：`Task::srInput` 写入 `meta.tsv` 第二行 `sr_input=0/1/2`；旧 meta 无字段按 Fast（旧 target/4）兼容；`TaskCenter::start` 必须把它传给 `EncodeOptions`，续编不能换策略。质量下拉：快速/平衡/高质量（默认 FullSource）。
 - **内容类型/模型也要持久化**：`Task::model`（`Realistic/Anime/RealisticHQ/AnimeHQ/AnimeX2/AnimeX3`）写入 `meta.tsv` 第三行 `model=...`；旧 meta 默认 Realistic。模型路径/scale 用 `srModelParamName/BinName/Scale`，不要硬编码；任务续编必须沿用。动画标准按 `target/src` 自动选 x2/x3/x4；真人暂只有 x4。HQ 模型（x4plus/x4plus-anime）输入上限 960，超过会 OOM/推理失败。
 - **SR 基准**：`domino_sr_bench`（不加入 ctest）测直接推理、Player 端到端和 Fast/Balanced/FullSource 离线编码；改动 SR/呈现后重跑，数据写入 `docs/plan-sr-playback-2026-10.md` / `plan-sr-worker-2026-10.md` / `plan-offline-sr-quality-2026-10.md`。
-- **离线 SR 流水线必须走 finishSr**：`needSR` 时 SR 在独立 worker，所有出口（正常 EOF、取消、writeError）都必须 `finishSr(...)` 后 join；队列上限 2 帧会额外占用 SR 输出缓冲，4K FullSource 需实机确认峰值内存。NCNN 快路径可用 `DOMINO_NO_VULKAN_FASTPATH=1` 关闭。
+- **离线 SR 流水线必须走 finishSr**：`needSR` 时 SR 推理和后处理各有一个 worker，所有出口（正常 EOF、取消、writeError）都必须 `finishSr(...)` 后 **分别 join infer/post 两个线程**；推理/后处理队列都会额外占用 SR 输出缓冲，4K FullSource 需实机确认峰值内存。NCNN 快路径可用 `DOMINO_NO_VULKAN_FASTPATH=1` 关闭。
 - **续编分段不能乱删**：续编取消/失败时保留 `task.mp4.resume`，下次启动先合并再继续；替换主文件必须先备份、失败回滚，禁止静默忽略 `remove/rename` 错误。
   - `.resume.merging` = 合并中的续编段；`.resume.cont` = 续编段标记（主文件丢失时禁止当首段提升）；`.bak` = 主文件替换备份，启动时先恢复。
   - 合并幂等按“分段**末**帧是否已被主文件覆盖”判断；不要用首帧（检查点可能落后约 1s，首帧早于主文件末尾是合法重叠）。

@@ -51,7 +51,19 @@ use_packing_layout = true;
 
 原有 `use_fp16_packed` / `use_fp16_storage` 保留。`use_packing_layout` 在 RTX 4070 SUPER 上实测直接 SR 1080p/2K/4K 约 **20.7→20.0 / 44.4→43.3 / 108.8→107.1ms**，离线 FullSource 约 **11.7→11.5s**，作为小幅优化保留。驱动不支持时由 NCNN 自动退回普通 Vulkan 路径；CPU 路径仍可正常回退。若现场驱动出现异常，可设置 `DOMINO_NO_VULKAN_FASTPATH=1` 关闭这些快路径。
 
-### 4. 多 SR worker 实验（未采用）
+### 4. infer / post 两级流水线
+
+在单 SR worker 基础上进一步拆分：
+
+- `SR::infer` 只负责输入转换 + GPU 推理，返回 `ncnn::Mat`。
+- `SR::convert` 是静态的 float→RGB24 转换，可放到独立线程。
+- 推理 worker 完成一帧后立刻取下一帧，后处理 worker 并行转换上一帧；主线程继续编码。
+- 推理/后处理队列各限制 2 帧，结果按 seq 排序后交给编码；不改变 PTS/续编语义。
+- 取消时同时中止推理和后处理线程，最后统一 join。
+
+实测（2s 720p→1080 FullSource）：**11.51s→11.26s**；4K FullSource：**11.80s→11.33s**。提升约 **2%–4%**，主要来自 GPU 推理期间重叠 CPU 输出转换。
+
+### 5. 多 SR worker 实验（未采用）
 
 尝试过 2 个独立 `SR`/Net 的 worker：
 
@@ -61,7 +73,7 @@ use_packing_layout = true;
 
 因此保留单 SR worker，多 worker 方案回退。
 
-### 5. 没有改动的部分
+### 6. 没有改动的部分
 
 - 视频帧 PTS 仍由 `startFrame + count` 生成，续编偏移不变。
 - 音频起点归一、音频最多领先视频 100ms、AAC ADTS BSF 逻辑不变。

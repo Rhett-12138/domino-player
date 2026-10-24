@@ -34,7 +34,7 @@
 - [x] 高质量模型档（2026-10）：x4plus（真人，33.4MB）/ x4plus-anime（动画，8.9MB）接入；输入上限 960；模型档位写入 meta、续编沿用；旧任务默认标准
 - [x] 动画 2x/3x 自动提速（2026-10）：animevideov3 x2/x3 接入；按 target/src 自动选 x2（≤2x）/x3（≤3x）/x4；通用 scale 替换 encode 硬编码 4x；720p→2K x2 约 1.9s/0.5s，720p→4K x3 约 2.7s/0.5s
 - [x] 沉浸式播放 UI（2026-10）：文件名/打开移到顶部标签栏，全屏按钮移到控制条最右；右侧选项面板合并美化与播放历史（历史持久化、点击续播）；美化面板磨皮/美白各占一行、滤镜三列网格；全屏隐藏标签栏与页面顶栏，控制条 3s 自动隐藏
-- [x] 离线 SR 流水线与 Vulkan 推理优化（2026-10，见 `docs/plan-offline-pipeline-2026-10.md`）：SR 独立 worker + 2 帧有界队列 + 源/输出帧池；启用 FP16 算术/cooperative matrix/shader local memory/packing layout；SR float→RGB 输出融合并并行转换；受控 A/B 的 2 秒 720p→1080 FullSource 约 19.6s→17.8s（约 -9%），后处理再降约 3–4 倍，峰值工作集约 +141MB（3 帧队列配置）；多 SR worker 实测会触发 Vulkan 队列错误，已回退
+- [x] 离线 SR 流水线与 Vulkan 推理优化（2026-10，见 `docs/plan-offline-pipeline-2026-10.md`）：SR 推理/后处理两级 worker + 有界队列 + 源/输出帧池；启用 FP16 算术/cooperative matrix/shader local memory/packing layout；SR float→RGB 输出融合并并行转换；受控 A/B 的 2 秒 720p→1080 FullSource 约 19.6s→17.8s（约 -9%），后处理再降约 3–4 倍，最新 11.5→11.3s（4K 11.8→11.3s）；多 SR worker 实测会触发 Vulkan 队列错误，已回退
 
 ### 进行中 / 待办（按优先级）
 1. [ ] **任务中心端到端人工验收**：建任务 → 编码 → 进度 → 断点续编 → 边播放（自动化难驱动 Flutter 控件，需人工过一遍）

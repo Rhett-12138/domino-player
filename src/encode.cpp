@@ -6,6 +6,7 @@
 #include <cmath>
 #include <vector>
 #include <deque>
+#include <map>
 #include <chrono>
 #include <filesystem>
 #include <condition_variable>
@@ -296,6 +297,7 @@ bool encodeOffline(const char* srcPath, const char* outPath, int targetW, const 
     int w;
     int h;
     double ft;
+    uint64_t seq;
   };
   struct SrResult {
     std::vector<uint8_t> src;
@@ -305,16 +307,33 @@ bool encodeOffline(const char* srcPath, const char* outPath, int targetW, const 
     int srRet = 0;
     bool fallback = false;
     double ft = 0;
+    uint64_t seq = 0;
+  };
+  struct SrPostJob {
+    std::vector<uint8_t> src;
+    std::vector<uint8_t> rgb;
+    ncnn::Mat out;
+    int srcW = 0;
+    int srcH = 0;
+    int srRet = 0;
+    double ft = 0;
+    uint64_t seq = 0;
   };
 
   const size_t kMaxSrQueue = 2;
+  const size_t kMaxPostQueue = 2;
   std::mutex srMu;
   std::condition_variable srCv;
   std::deque<SrJob> srJobs;
-  std::deque<SrResult> srResults;
+  std::deque<SrPostJob> postJobs;
+  std::map<uint64_t, SrResult> srResults;
+  uint64_t submitSeq = 0;
+  uint64_t nextResultSeq = 0;
   bool srStop = false;
+  bool postStop = false;
   bool srAbort = false;
   std::thread srThread;
+  std::thread postThread;
 
   auto acquireSrc = [&] {
     if (!freeSrc.empty()) {
@@ -436,9 +455,11 @@ bool encodeOffline(const char* srcPath, const char* outPath, int targetW, const 
       SrResult r;
       {
         std::lock_guard<std::mutex> lk(srMu);
-        if (srResults.empty()) break;
-        r = std::move(srResults.front());
-        srResults.pop_front();
+        auto it = srResults.find(nextResultSeq);
+        if (it == srResults.end()) break;
+        r = std::move(it->second);
+        srResults.erase(it);
+        nextResultSeq++;
       }
       encodeResult(std::move(r));
     }
@@ -456,7 +477,7 @@ bool encodeOffline(const char* srcPath, const char* outPath, int targetW, const 
     int dl0[1] = { srcW * 3 };
     sws_scale(swsIn.p, frame->data, frame->linesize, 0, srcH, d0, dl0);
 
-    SrJob job{ std::move(rgb), acquireOut(), srcW, srcH, ft };
+    SrJob job{ std::move(rgb), acquireOut(), srcW, srcH, ft, submitSeq++ };
     rgb = acquireSrc();
     for (;;) {
       drainSr();
@@ -488,11 +509,18 @@ bool encodeOffline(const char* srcPath, const char* outPath, int targetW, const 
     }
     srCv.notify_all();
     if (srThread.joinable()) srThread.join();
+    {
+      std::lock_guard<std::mutex> lk(srMu);
+      postStop = true;
+    }
+    srCv.notify_all();
+    if (postThread.joinable()) postThread.join();
     if (!abort) {
       drainSr();
     } else {
       std::lock_guard<std::mutex> lk(srMu);
       srJobs.clear();
+      postJobs.clear();
       srResults.clear();
     }
     sr.clear();
@@ -513,23 +541,57 @@ bool encodeOffline(const char* srcPath, const char* outPath, int targetW, const 
         }
         srCv.notify_all();  // 让 submit 继续投递下一帧
 
+        SrPostJob post;
+        post.ft = job.ft;
+        post.seq = job.seq;
+        post.srcW = job.w;
+        post.srcH = job.h;
+        post.src = std::move(job.src);
+        post.rgb = std::move(job.out);
+        post.srRet = sr.infer(post.src.data(), job.w, job.h, inW, post.out);
+
+        {
+          std::unique_lock<std::mutex> lk(srMu);
+          srCv.wait(lk, [&] {
+            return srAbort || postJobs.size() < kMaxPostQueue;
+          });
+          if (srAbort) break;
+          postJobs.push_back(std::move(post));
+        }
+        srCv.notify_all();
+      }
+    });
+
+    postThread = std::thread([&] {
+      for (;;) {
+        SrPostJob post;
+        {
+          std::unique_lock<std::mutex> lk(srMu);
+          srCv.wait(lk, [&] {
+            return srAbort || !postJobs.empty() || (postStop && postJobs.empty());
+          });
+          if (srAbort || (postStop && postJobs.empty())) break;
+          post = std::move(postJobs.front());
+          postJobs.pop_front();
+        }
+        srCv.notify_all();
+
         SrResult res;
-        res.ft = job.ft;
-        res.src = std::move(job.src);
-        res.rgb = std::move(job.out);
-        const int sw = sr.process(res.src.data(), job.w, job.h, inW, res.rgb);
-        res.srRet = sw;
-        if (sw > 0) {
-          res.w = sw;
-          res.h = (int)(res.rgb.size() / (size_t)sw / 3);
+        res.ft = post.ft;
+        res.seq = post.seq;
+        res.src = std::move(post.src);
+        res.srRet = post.srRet;
+        if (post.srRet > 0 && SR::convert(post.out, res.rgb)) {
+          res.w = post.out.w;
+          res.h = post.out.h;
         } else {
-          res.w = job.w;
-          res.h = job.h;
+          res.w = post.srcW;
+          res.h = post.srcH;
           res.fallback = true;
         }
         {
           std::lock_guard<std::mutex> lk(srMu);
-          srResults.push_back(std::move(res));
+          srResults.emplace(res.seq, std::move(res));
         }
         srCv.notify_all();
       }

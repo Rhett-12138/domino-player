@@ -23,7 +23,7 @@ bool SR::init(const char* paramPath, const char* binPath) {
   return true;
 }
 
-int SR::process(const uint8_t* rgb, int w, int h, int inW, std::vector<uint8_t>& outRgb) {
+int SR::infer(const uint8_t* rgb, int w, int h, int inW, ncnn::Mat& out) {
   if (!ready_) return -1;
   int inH = (h * inW / w) & ~1;
   const float norm[3] = { 1.f / 255.f, 1.f / 255.f, 1.f / 255.f };
@@ -34,9 +34,12 @@ int SR::process(const uint8_t* rgb, int w, int h, int inW, std::vector<uint8_t>&
   const char* inName = net_.input_names().empty() ? "data" : net_.input_names().front();
   const char* outName = net_.output_names().empty() ? "output" : net_.output_names().front();
   if (ex.input(inName, in) != 0) return -1;
-  ncnn::Mat out;
   if (ex.extract(outName, out) != 0) return -1;
-  if (out.c < 3) return -1;
+  return out.w;
+}
+
+bool SR::convert(const ncnn::Mat& out, std::vector<uint8_t>& outRgb) {
+  if (out.c < 3) return false;
   const int outW = out.w;
   const int outH = out.h;
   outRgb.resize((size_t)outW * outH * 3);
@@ -77,7 +80,14 @@ int SR::process(const uint8_t* rgb, int w, int h, int inW, std::vector<uint8_t>&
     }
     for (auto& t : workers) t.join();
   }
-  return out.w;
+  return true;
+}
+
+int SR::process(const uint8_t* rgb, int w, int h, int inW, std::vector<uint8_t>& outRgb) {
+  ncnn::Mat out;
+  const int outW = infer(rgb, w, h, inW, out);
+  if (outW <= 0 || !convert(out, outRgb)) return -1;
+  return outW;
 }
 
 void SR::clear() {
