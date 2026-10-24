@@ -475,8 +475,21 @@ int TensorRtSR::process(const uint8_t* rgb, int w, int h, int inW,
   }
   if (!m.ctx->enqueueV3((cudaStream_t)m.stream)) return -1;
   if (outBytes > m.hostOutBytes) return -1;
-  if (m.drv.d2hAsync(m.hostOut, m.dOut, outBytes, m.stream) != 0) return -1;
-  if (m.drv.streamSync(m.stream) != 0) return -1;
+  const bool stageProfile = [] {
+    const char* p = getenv("DOMINO_TRT_PROFILE_STAGES");
+    return p && *p && *p != '0';
+  }();
+  auto tInfer = std::chrono::steady_clock::now();
+  auto tD2H = tInfer;
+  if (stageProfile) {
+    if (m.drv.streamSync(m.stream) != 0) return -1;
+    tInfer = std::chrono::steady_clock::now();
+    if (m.drv.d2h(m.hostOut, m.dOut, outBytes) != 0) return -1;
+    tD2H = std::chrono::steady_clock::now();
+  } else {
+    if (m.drv.d2hAsync(m.hostOut, m.dOut, outBytes, m.stream) != 0) return -1;
+    if (m.drv.streamSync(m.stream) != 0) return -1;
+  }
 
   outRgb.resize((size_t)outW * outH * 3);
   const uint16_t* planes[3] = {
@@ -523,8 +536,16 @@ int TensorRtSR::process(const uint8_t* rgb, int w, int h, int inW,
   if (const char* profile = getenv("DOMINO_TRT_PROFILE")) {
     if (*profile && *profile != '0') {
       const auto t1 = std::chrono::steady_clock::now();
-      fprintf(stderr, "[trt] %dx%d -> %dx%d %.2fms\n", inW, inH, outW, outH,
+      fprintf(stderr, "[trt] %dx%d -> %dx%d total=%.2fms",
+              inW, inH, outW, outH,
               std::chrono::duration<double, std::milli>(t1 - profileT0).count());
+      if (stageProfile) {
+        fprintf(stderr, " infer=%.2fms d2h=%.2fms convert=%.2fms",
+                std::chrono::duration<double, std::milli>(tInfer - profileT0).count(),
+                std::chrono::duration<double, std::milli>(tD2H - tInfer).count(),
+                std::chrono::duration<double, std::milli>(t1 - tD2H).count());
+      }
+      fprintf(stderr, "\n");
     }
   }
   return outW;
