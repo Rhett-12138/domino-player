@@ -57,6 +57,7 @@ target_compile_definitions(domino_engine PRIVATE
 target_compile_definitions(domino_engine PRIVATE
   "DOMINO_DEFAULT_ONNX_DIR=\"${REPO_ROOT}/assets/models/sr/onnx/\"")
 if (DOMINO_HAS_TRT_RTX)
+  target_sources(domino_engine PRIVATE ${ENGINE_SRC}/trt/convert_avx2.cpp)
   target_include_directories(domino_engine PRIVATE
     ${DOMINO_TRT_RTX_ROOT}/include
     ${ENGINE_SRC}/trt
@@ -66,6 +67,10 @@ if (DOMINO_HAS_TRT_RTX)
     ${DOMINO_TRT_RTX_ROOT}/lib/tensorrt_onnxparser_rtx_1_7.lib
   )
   target_compile_definitions(domino_engine PRIVATE DOMINO_HAS_TRT_RTX=1)
+endif()
+if (DOMINO_HAS_TRT_RTX AND MSVC)
+  set_source_files_properties(${ENGINE_SRC}/trt/convert_avx2.cpp PROPERTIES
+    COMPILE_OPTIONS "/arch:AVX2")
 endif()
 target_compile_features(domino_engine PRIVATE cxx_std_17)
 if (MSVC)

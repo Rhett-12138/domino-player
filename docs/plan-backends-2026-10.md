@@ -31,7 +31,10 @@
 |---|---:|---:|
 | 1080p | 30.0 FPS | 29.6 FPS（源 30fps 上限） |
 | 2K | 21.7 FPS | 29.6 FPS（源 30fps 上限） |
-| 4K | 9.0 FPS | **22.65 FPS** |
+| 4K | 9.0 FPS | **27.6 FPS** |
+
+- 输出转换优化：FP16→RGB 使用 16-bit 字节 LUT + AVX2/F16C 快路径（CPU 不支持时自动回退标量），D2H 使用 pinned host memory；4K 从 22.65 提升到 27.6 FPS，离线 FullSource 从 5.11s 降到 4.34s。
+- 仍差约 1.2ms 到 33.3ms/30fps；剩余主要是 TensorRT 推理约 25ms + D2H/输出转换。
 
 ### 离线编码（2s 720p→1080，CRF18）
 
@@ -39,7 +42,7 @@
 |---|---:|---:|
 | Fast | 1.42s | 1.81s |
 | Balanced | 6.62s | 3.18s |
-| FullSource | 11.26s | **5.11s** |
+| FullSource | 11.26s | **4.34s** |
 
 Fast 由固定编码/初始化开销主导，TensorRT 没有优势；Balanced/FullSource 约 2x。
 

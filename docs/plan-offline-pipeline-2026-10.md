@@ -118,7 +118,7 @@ use_packing_layout = true;
 - `Realistic` / `RealisticHQ` 走 TensorRT-RTX 1.7.1 FP16 ONNX；动画与 2x/3x 仍走 NCNN。
 - 保留 infer / post 两段流水线；TensorRT 在 infer worker 完成推理 + D2H，post worker 继续按 seq 排序后编码。
 - engine 缓存在 `%APPDATA%/DominoPlayer/trt-rtx`；初始化失败回退 NCNN，推理失败仍按规则回退源帧并判任务失败。
-- 2s 720p→1080（RTX 4070 SUPER）：Fast 1.81s，Balanced 3.18s，FullSource **5.11s**；NCNN 分别为 1.42 / 6.62 / 11.26s。
+- 2s 720p→1080（RTX 4070 SUPER）：Fast 1.81s，Balanced 3.18s，FullSource **4.34s**；NCNN 分别为 1.42 / 6.62 / 11.26s。
 - x4plus HQ 2s 720p→4K FullSource：TensorRT **31.9s**；NCNN 直接推理约 1378ms/帧（估算约 83s）。
 - batch=2 在 compact 1080p 上约 214ms/2 帧，没有吞吐收益，暂不启用。
 - 详见 `docs/plan-backends-2026-10.md`。

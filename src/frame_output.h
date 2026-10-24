@@ -54,7 +54,6 @@ private:
   bool beautyActive_ = false;
   std::vector<uint8_t> outRgb_;   // 当前上屏帧（锁内交换更新）
   std::vector<uint8_t> tmpRgb_;   // 空闲帧缓冲（复用容量）
-  std::vector<uint8_t> rawRgb_;   // 最近原始帧（滤镜缩略图用，UI 线程独有）
   std::atomic<bool> newFrame_{ false };
   int w_ = 0, h_ = 0;
   std::mutex mu_;                 // 保护 outRgb_/w_/h_

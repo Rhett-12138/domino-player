@@ -47,6 +47,11 @@ target_compile_definitions(domino_core PUBLIC
 target_compile_definitions(domino_core PUBLIC
   "DOMINO_DEFAULT_ONNX_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/assets/models/sr/onnx/\"")
 if (DOMINO_HAS_TRT_RTX)
+  target_sources(domino_core PRIVATE src/trt/convert_avx2.cpp)
+  if (MSVC)
+    set_source_files_properties(src/trt/convert_avx2.cpp PROPERTIES
+      COMPILE_OPTIONS "/arch:AVX2")
+  endif()
   target_include_directories(domino_core PRIVATE
     ${DOMINO_TRT_RTX_ROOT}/include
     ${CMAKE_CURRENT_SOURCE_DIR}/src/trt
@@ -104,6 +109,29 @@ if (DOMINO_HAS_TRT_RTX)
 endif()
 
 # ---- SR 播放基准（手动运行，不加入 ctest） ----
+if (DOMINO_HAS_TRT_RTX)
+  add_executable(domino_trt_bench tests/trt_bench.cpp)
+  target_include_directories(domino_trt_bench PRIVATE
+    src
+    ${FFMPEG_ROOT}/include
+    ${NCNN_ROOT}/x64/include
+  )
+  target_link_libraries(domino_trt_bench PRIVATE domino_core)
+  target_compile_definitions(domino_trt_bench PRIVATE NCNN_VULKAN)
+  add_custom_command(TARGET domino_trt_bench POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+      ${FFMPEG_ROOT}/bin/avcodec-63.dll
+      ${FFMPEG_ROOT}/bin/avformat-63.dll
+      ${FFMPEG_ROOT}/bin/avutil-61.dll
+      ${FFMPEG_ROOT}/bin/swscale-10.dll
+      ${FFMPEG_ROOT}/bin/swresample-7.dll
+      ${NCNN_ROOT}/x64/bin/ncnn.dll
+      ${DOMINO_TRT_RTX_ROOT}/bin/tensorrt_rtx_1_7.dll
+      ${DOMINO_TRT_RTX_ROOT}/bin/tensorrt_onnxparser_rtx_1_7.dll
+      $<TARGET_FILE_DIR:domino_trt_bench>
+  )
+endif()
+
 add_executable(domino_sr_bench
   tests/sr_bench.cpp
   src/player.cpp

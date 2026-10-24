@@ -6,6 +6,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <mutex>
 #include <thread>
 
@@ -15,9 +16,11 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
+#include <intrin.h>
 #include <NvInfer.h>
 #include <NvOnnxParser.h>
 #include <cuda_runtime_api.h>
+#include "convert_avx2.h"
 
 extern "C" {
 #include <libswscale/swscale.h>
@@ -38,8 +41,12 @@ using cuDevicePrimaryCtxRelease_t = CUresult(__stdcall*)(CUdevice);
 using cuCtxSetCurrent_t = CUresult(__stdcall*)(CUcontext);
 using cuMemAlloc_t = CUresult(__stdcall*)(CUdeviceptr*, size_t);
 using cuMemFree_t = CUresult(__stdcall*)(CUdeviceptr);
+using cuMemHostAlloc_t = CUresult(__stdcall*)(void**, size_t, unsigned);
+using cuMemFreeHost_t = CUresult(__stdcall*)(void*);
 using cuMemcpyHtoD_t = CUresult(__stdcall*)(CUdeviceptr, const void*, size_t);
 using cuMemcpyDtoH_t = CUresult(__stdcall*)(void*, CUdeviceptr, size_t);
+using cuMemcpyHtoDAsync_t = CUresult(__stdcall*)(CUdeviceptr, const void*, size_t, CUstream);
+using cuMemcpyDtoHAsync_t = CUresult(__stdcall*)(void*, CUdeviceptr, size_t, CUstream);
 using cuStreamCreate_t = CUresult(__stdcall*)(CUstream*, unsigned);
 using cuStreamDestroy_t = CUresult(__stdcall*)(CUstream);
 using cuStreamSynchronize_t = CUresult(__stdcall*)(CUstream);
@@ -53,8 +60,12 @@ struct Driver {
   cuCtxSetCurrent_t ctxSet = nullptr;
   cuMemAlloc_t memAlloc = nullptr;
   cuMemFree_t memFree = nullptr;
+  cuMemHostAlloc_t hostAlloc = nullptr;
+  cuMemFreeHost_t hostFree = nullptr;
   cuMemcpyHtoD_t h2d = nullptr;
   cuMemcpyDtoH_t d2h = nullptr;
+  cuMemcpyHtoDAsync_t h2dAsync = nullptr;
+  cuMemcpyDtoHAsync_t d2hAsync = nullptr;
   cuStreamCreate_t streamCreate = nullptr;
   cuStreamDestroy_t streamDestroy = nullptr;
   cuStreamSynchronize_t streamSync = nullptr;
@@ -69,13 +80,18 @@ struct Driver {
     ctxSet = (cuCtxSetCurrent_t)GetProcAddress(lib, "cuCtxSetCurrent");
     memAlloc = (cuMemAlloc_t)GetProcAddress(lib, "cuMemAlloc_v2");
     memFree = (cuMemFree_t)GetProcAddress(lib, "cuMemFree_v2");
+    hostAlloc = (cuMemHostAlloc_t)GetProcAddress(lib, "cuMemHostAlloc");
+    hostFree = (cuMemFreeHost_t)GetProcAddress(lib, "cuMemFreeHost");
     h2d = (cuMemcpyHtoD_t)GetProcAddress(lib, "cuMemcpyHtoD_v2");
     d2h = (cuMemcpyDtoH_t)GetProcAddress(lib, "cuMemcpyDtoH_v2");
+    h2dAsync = (cuMemcpyHtoDAsync_t)GetProcAddress(lib, "cuMemcpyHtoDAsync_v2");
+    d2hAsync = (cuMemcpyDtoHAsync_t)GetProcAddress(lib, "cuMemcpyDtoHAsync_v2");
     streamCreate = (cuStreamCreate_t)GetProcAddress(lib, "cuStreamCreate");
     streamDestroy = (cuStreamDestroy_t)GetProcAddress(lib, "cuStreamDestroy");
     streamSync = (cuStreamSynchronize_t)GetProcAddress(lib, "cuStreamSynchronize");
     return init && deviceGet && ctxRetain && ctxRelease && ctxSet && memAlloc && memFree &&
-           h2d && d2h && streamCreate && streamDestroy && streamSync;
+           hostAlloc && hostFree && h2d && d2h && h2dAsync && d2hAsync &&
+           streamCreate && streamDestroy && streamSync;
   }
 };
 
@@ -85,6 +101,20 @@ public:
     if (severity <= Severity::kWARNING) fprintf(stderr, "[trt] %s\n", msg);
   }
 };
+
+bool cpuHasAvx2F16c() {
+  static const bool ok = [] {
+    int regs[4] = {};
+    __cpuid(regs, 1);
+    const bool f16c = (regs[2] & (1 << 29)) != 0;
+    const bool osxsave = (regs[2] & (1 << 27)) != 0;
+    const bool avx = (regs[2] & (1 << 28)) != 0;
+    __cpuidex(regs, 7, 0);
+    const bool avx2 = (regs[1] & (1 << 5)) != 0;
+    return f16c && osxsave && avx && avx2;
+  }();
+  return ok;
+}
 
 uint16_t f2h(float v) {
   uint32_t x;
@@ -158,15 +188,22 @@ struct TensorRtSR::Impl {
   SwsContext* sws = nullptr;
   int swsW = 0, swsH = 0, swsOutW = 0, swsOutH = 0;
   std::vector<uint8_t> resized;
-  std::vector<uint16_t> hostIn;
-  std::vector<uint16_t> hostOut;
-  std::vector<float> hostOutF;
+  uint16_t* hostIn = nullptr;
+  uint16_t* hostOut = nullptr;
+  size_t hostInBytes = 0;
+  size_t hostOutBytes = 0;
   uint16_t lut[256]{};
+  uint8_t halfToByte[65536]{};
   bool lutReady = false;
 
   void initLut() {
     if (lutReady) return;
     for (int i = 0; i < 256; i++) lut[i] = f2h((float)i / 255.0f);
+    for (int i = 0; i < 65536; i++) {
+      float v = h2f((uint16_t)i) * 255.f;
+      v = std::min(255.f, std::max(0.f, v));
+      halfToByte[i] = (uint8_t)v;
+    }
     lutReady = true;
   }
 
@@ -229,6 +266,7 @@ struct TensorRtSR::Impl {
     objs.config = objs.builder->createBuilderConfig();
     if (!objs.config) return false;
     objs.config->setMemoryPoolLimit(nvinfer1::MemoryPoolType::kWORKSPACE, (size_t)4 << 30);
+    objs.config->setBuilderOptimizationLevel(5);
 
     auto profile = objs.builder->createOptimizationProfile();
     if (!profile) return false;
@@ -277,10 +315,10 @@ struct TensorRtSR::Impl {
     if (dIn) { drv.memFree(dIn); dIn = 0; dInBytes = 0; }
     if (dOut) { drv.memFree(dOut); dOut = 0; dOutBytes = 0; }
     if (stream) { drv.streamDestroy(stream); stream = nullptr; }
+    if (hostIn) { drv.hostFree(hostIn); hostIn = nullptr; }
+    if (hostOut) { drv.hostFree(hostOut); hostOut = nullptr; }
+    hostInBytes = hostOutBytes = 0;
     if (cuCtx && drv.ctxRelease) drv.ctxRelease(cuDev);
-    hostIn.clear();
-    hostOut.clear();
-    hostOutF.clear();
     resized.clear();
     cuCtx = nullptr;
     cuDev = 0;
@@ -334,10 +372,17 @@ bool TensorRtSR::init(const char* onnxPath, const char* cacheDir, const char* ca
   const size_t maxInBytes = (size_t)3 * maxInW * maxInH * 2;
   const size_t maxOutBytes = (size_t)3 * maxInW * scale * maxInH * scale * 2;
   if (!impl_->ensureDevice(maxInBytes, maxOutBytes)) { impl_->reset(); return false; }
+  if (impl_->drv.hostAlloc((void**)&impl_->hostIn, maxInBytes, 0) != 0 ||
+      impl_->drv.hostAlloc((void**)&impl_->hostOut, maxOutBytes, 0) != 0) {
+    impl_->reset();
+    return false;
+  }
+  impl_->hostInBytes = maxInBytes;
+  impl_->hostOutBytes = maxOutBytes;
   impl_->initLut();
   impl_->ready = true;
 
-  // 触发目标 shape 的 JIT，避免第一帧卡顿；失败不影响后续正常路径。
+  // 瑙﹀彂鐩爣 shape 鐨?JIT锛岄伩鍏嶇涓€甯у崱椤匡紱澶辫触涓嶅奖鍝嶅悗缁甯歌矾寰勩€?
   const int warmW = std::min(960, maxInW);
   const int warmH = std::min(540, maxInH);
   std::vector<uint8_t> dummy((size_t)warmW * warmH * 3, 0);
@@ -352,8 +397,8 @@ int TensorRtSR::process(const uint8_t* rgb, int w, int h, int inW,
   if (!impl_ || !impl_->ready || !rgb || w <= 0 || h <= 0 || inW <= 1) return -1;
   Impl& m = *impl_;
   if (m.drv.ctxSet(m.cuCtx) != 0) return -1;
-  // 动态 profile 覆盖常见横屏；竖屏/超宽/小目标按源比例双向夹取，
-  // 避免 inH 超上限直接关闭 SR 或让离线任务判失败。
+  // 鍔ㄦ€?profile 瑕嗙洊甯歌妯睆锛涚珫灞?瓒呭/灏忕洰鏍囨寜婧愭瘮渚嬪弻鍚戝す鍙栵紝
+  // 閬垮厤 inH 瓒呬笂闄愮洿鎺ュ叧闂?SR 鎴栬绂荤嚎浠诲姟鍒ゅけ璐ャ€?
   int fitW = std::min(inW, m.maxInW);
   int fitH = (int)(((int64_t)h * fitW / w) & ~1);
   if (fitH > m.maxInH) {
@@ -395,13 +440,14 @@ int TensorRtSR::process(const uint8_t* rgb, int w, int h, int inW,
   }
 
   const size_t inElems = (size_t)3 * inW * inH;
-  if (m.hostIn.size() < inElems) m.hostIn.resize(inElems);
+  const size_t inBytes = inElems * 2;
+  if (inBytes > m.hostInBytes) return -1;
   const size_t plane = (size_t)inW * inH;
   for (int y = 0; y < inH; y++) {
     const uint8_t* row = src + (size_t)y * inW * 3;
-    uint16_t* r = m.hostIn.data() + (size_t)y * inW;
-    uint16_t* g = m.hostIn.data() + plane + (size_t)y * inW;
-    uint16_t* b = m.hostIn.data() + 2 * plane + (size_t)y * inW;
+    uint16_t* r = m.hostIn + (size_t)y * inW;
+    uint16_t* g = m.hostIn + plane + (size_t)y * inW;
+    uint16_t* b = m.hostIn + 2 * plane + (size_t)y * inW;
     for (int x = 0; x < inW; x++) {
       r[x] = m.lut[row[x * 3 + 0]];
       g[x] = m.lut[row[x * 3 + 1]];
@@ -409,9 +455,8 @@ int TensorRtSR::process(const uint8_t* rgb, int w, int h, int inW,
     }
   }
 
-  const size_t inBytes = inElems * 2;
   if (!m.ensureDevice(inBytes, m.dOutBytes)) return -1;
-  if (m.drv.h2d(m.dIn, m.hostIn.data(), inBytes) != 0) return -1;
+  if (m.drv.h2dAsync(m.dIn, m.hostIn, inBytes, m.stream) != 0) return -1;
   if (!m.ctx->setInputShape("input", nvinfer1::Dims4{1, 3, inH, inW})) return -1;
   nvinfer1::Dims od = m.ctx->getTensorShape("output");
   if (od.nbDims != 4 || od.d[0] != 1 || od.d[1] != 3 ||
@@ -428,35 +473,43 @@ int TensorRtSR::process(const uint8_t* rgb, int w, int h, int inW,
     return -1;
   }
   if (!m.ctx->enqueueV3((cudaStream_t)m.stream)) return -1;
+  if (outBytes > m.hostOutBytes) return -1;
+  if (m.drv.d2hAsync(m.hostOut, m.dOut, outBytes, m.stream) != 0) return -1;
   if (m.drv.streamSync(m.stream) != 0) return -1;
-  if (m.hostOut.size() < outElems) m.hostOut.resize(outElems);
-  if (m.drv.d2h(m.hostOut.data(), m.dOut, outBytes) != 0) return -1;
 
   outRgb.resize((size_t)outW * outH * 3);
-  auto convertRows = [&](int y0, int y1) {
-    const uint16_t* r = m.hostOut.data();
-    const uint16_t* g = r + (size_t)outW * outH;
-    const uint16_t* b = g + (size_t)outW * outH;
+  const uint16_t* planes[3] = {
+    m.hostOut,
+    m.hostOut + (size_t)outW * outH,
+    m.hostOut + (size_t)2 * outW * outH
+  };
+  auto convertRowsScalar = [&](int y0, int y1) {
     for (int y = y0; y < y1; y++) {
-      const uint16_t* rp = r + (size_t)y * outW;
-      const uint16_t* gp = g + (size_t)y * outW;
-      const uint16_t* bp = b + (size_t)y * outW;
+      const uint16_t* rp = planes[0] + (size_t)y * outW;
+      const uint16_t* gp = planes[1] + (size_t)y * outW;
+      const uint16_t* bp = planes[2] + (size_t)y * outW;
       uint8_t* dp = outRgb.data() + (size_t)y * outW * 3;
       for (int x = 0; x < outW; x++) {
-        float vr = h2f(rp[x]) * 255.f;
-        float vg = h2f(gp[x]) * 255.f;
-        float vb = h2f(bp[x]) * 255.f;
-        vr = std::min(255.f, std::max(0.f, vr));
-        vg = std::min(255.f, std::max(0.f, vg));
-        vb = std::min(255.f, std::max(0.f, vb));
-        dp[x * 3 + 0] = (uint8_t)vr;
-        dp[x * 3 + 1] = (uint8_t)vg;
-        dp[x * 3 + 2] = (uint8_t)vb;
+        dp[x * 3 + 0] = m.halfToByte[rp[x]];
+        dp[x * 3 + 1] = m.halfToByte[gp[x]];
+        dp[x * 3 + 2] = m.halfToByte[bp[x]];
       }
     }
   };
+  const bool avx2 = cpuHasAvx2F16c();
+  auto convertRowsAvx2 = [&](int y0, int y1) {
+    trtConvertHalfToRgbAvx2(planes[0] + (size_t)y0 * outW,
+                            planes[1] + (size_t)y0 * outW,
+                            planes[2] + (size_t)y0 * outW,
+                            outW, y1 - y0,
+                            outRgb.data() + (size_t)y0 * outW * 3,
+                            m.halfToByte);
+  };
+  std::function<void(int, int)> convertRows;
+  if (avx2) convertRows = convertRowsAvx2;
+  else convertRows = convertRowsScalar;
   int threads = (int)std::thread::hardware_concurrency();
-  threads = std::max(1, std::min(8, threads));
+  threads = std::max(1, std::min(12, threads));
   if ((size_t)outW * outH < 200000) threads = 1;
   if (threads <= 1) {
     convertRows(0, outH);
@@ -486,4 +539,5 @@ int TensorRtSR::process(const uint8_t*, int, int, int, std::vector<uint8_t>&) { 
 void TensorRtSR::clear() {}
 
 #endif
+
 

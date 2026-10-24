@@ -32,6 +32,8 @@ cmake --build build --target domino_sr_bench --config Release
 ./build/Release/domino_sr_bench.exe ./tests/assets "%TEMP%/test_1080.mp4" 2560
 # 可选：只跑离线编码（模型编号 0=标准，2=HQ；最后一个参数）
 ./build/Release/domino_sr_bench.exe ./tests/assets ./tests/assets/test_av.mp4 3840 2 0 0 --offline-only
+# 直接测 TensorRT process（含 resize/D2H/RGB 转换，不经过 NCNN）
+./build/Release/domino_trt_bench.exe ./tests/assets
 # 强制 NCNN 对比
 $env:DOMINO_NO_TRT=1; ./build/Release/domino_sr_bench.exe ...
 ```

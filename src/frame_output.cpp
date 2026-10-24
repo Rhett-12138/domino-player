@@ -111,7 +111,6 @@ void EngineFrameOutput::presentFrame(const uint8_t* rgb, int w, int h) {
   } else {
     tmpRgb_.assign(rgb, rgb + (size_t)w * h * 3);
   }
-  rawRgb_.assign(rgb, rgb + (size_t)w * h * 3);
   std::lock_guard<std::mutex> lk(mu_);
   outRgb_.swap(tmpRgb_);   // 交换缓冲：旧帧进 tmpRgb_ 复用，零分配
   w_ = w;
@@ -135,9 +134,13 @@ void EngineFrameOutput::downscale(const uint8_t* src, int sw, int sh,
 }
 
 void EngineFrameOutput::makeFilterPreviews(int count) {
-  if (rawRgb_.empty() || w_ <= 0 || h_ <= 0 || count < 1) return;
+  if (count < 1) return;
   std::vector<uint8_t> small((size_t)pw_ * ph_ * 3);
-  downscale(rawRgb_.data(), w_, h_, small.data(), pw_, ph_);
+  {
+    std::lock_guard<std::mutex> lk(mu_);
+    if (outRgb_.empty() || w_ <= 0 || h_ <= 0) return;
+    downscale(outRgb_.data(), w_, h_, small.data(), pw_, ph_);
+  }
   // 基础图：当前美颜参数、无滤镜
   EngineBeautyParams base = bp_;
   base.filterIdx = 0;
