@@ -38,7 +38,7 @@
 
 ### 进行中 / 待办（按优先级）
 1. [x] **任务中心端到端人工验收**：建任务 → 编码 → 进度 → 断点续编 → 边播放；用户已确认通过
-2. [ ] **可选推理后端（普适性优先）**：NCNN Vulkan 保持默认、零额外安装；只做 ONNX Runtime DirectML 免 CUDA fallback；TensorRT/CUDA 仅作为 NVIDIA 高级可选性能包（见 `docs/plan-backends-2026-10.md`）
+2. [ ] **高性能推理后端**：先做 TensorRT/CUDA（ONNX 已可导出），RTX 上验证 batch=1/2 后再接可选后端；NCNN 保留回退，DirectML 等兼容性后置（见 `docs/plan-backends-2026-10.md`）
 3. [ ] **2K/4K 实时 SR 优化**：优化后约 2K≈22、4K≈9 FPS；自动降档已兜底；真正 2K/4K 30fps 仍需后端/轻量模型
 4. [ ] **高质量模型盲测/模型包**：验证 x4plus / x4plus-anime 在真人、动画、文字上的收益；若继续增加模型，做可选模型包/下载（见 `docs/plan-model-library-2026-10.md`）
 5. [ ] **真人 2x/3x 模型**：动画 x2/x3 已接入；SRMD 与当前 NCNN 不兼容，Real-CUGAN 真人实测过度平滑（不建议），Real-ESRGAN x2plus/BSRGAN2X 实测速度不适合替代 General 4x（见 `docs/plan-realistic-2x3-models-2026-10.md`）
