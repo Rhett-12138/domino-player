@@ -46,11 +46,22 @@
 use_fp16_arithmetic = true;
 use_cooperative_matrix = true;
 use_shader_local_memory = true;
+use_packing_layout = true;
 ```
 
-原有 `use_fp16_packed` / `use_fp16_storage` 保留。驱动不支持时由 NCNN 自动退回普通 Vulkan 路径；CPU 路径仍可正常回退。若现场驱动出现异常，可设置 `DOMINO_NO_VULKAN_FASTPATH=1` 关闭这三项快路径。
+原有 `use_fp16_packed` / `use_fp16_storage` 保留。`use_packing_layout` 在 RTX 4070 SUPER 上实测直接 SR 1080p/2K/4K 约 **20.7→20.0 / 44.4→43.3 / 108.8→107.1ms**，离线 FullSource 约 **11.7→11.5s**，作为小幅优化保留。驱动不支持时由 NCNN 自动退回普通 Vulkan 路径；CPU 路径仍可正常回退。若现场驱动出现异常，可设置 `DOMINO_NO_VULKAN_FASTPATH=1` 关闭这些快路径。
 
-### 4. 没有改动的部分
+### 4. 多 SR worker 实验（未采用）
+
+尝试过 2 个独立 `SR`/Net 的 worker：
+
+- 单次 bench 曾出现 FullSource 11.7s→10.4s 的表面提升。
+- 但 ctest 压测出现 `vkQueueSubmit failed -4`，部分帧回退源帧，任务失败。
+- NCNN Vulkan 当前配置下并发 Net 的 GPU 队列不可靠；不能为了吞吐牺牲正确性。
+
+因此保留单 SR worker，多 worker 方案回退。
+
+### 5. 没有改动的部分
 
 - 视频帧 PTS 仍由 `startFrame + count` 生成，续编偏移不变。
 - 音频起点归一、音频最多领先视频 100ms、AAC ADTS BSF 逻辑不变。

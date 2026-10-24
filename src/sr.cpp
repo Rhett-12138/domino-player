@@ -16,6 +16,7 @@ bool SR::init(const char* paramPath, const char* binPath) {
     net_.opt.use_fp16_arithmetic = true;
     net_.opt.use_cooperative_matrix = true;
     net_.opt.use_shader_local_memory = true;
+    net_.opt.use_packing_layout = true;
   }
   if (net_.load_param(paramPath) != 0 || net_.load_model(binPath) != 0) return false;
   ready_ = true;
