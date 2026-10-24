@@ -149,6 +149,11 @@ float4 ps_final(VSOut i) : SV_Target
     }
     return float4(saturate(float3(r, g, b)), 1.0);
 }
+
+float4 ps_copy(VSOut i) : SV_Target
+{
+    return float4(tex0.Sample(samp, i.uv).rgb, 1.0);
+}
 )HLSL";
 
 struct alignas(16) BeautyCB {
@@ -188,6 +193,7 @@ struct GpuFrameOutput::Impl {
   ComPtr<ID3D11VertexShader> vs;
   ComPtr<ID3D11PixelShader> psBlur;
   ComPtr<ID3D11PixelShader> psFinal;
+  ComPtr<ID3D11PixelShader> psCopy;
   ComPtr<ID3D11Buffer> cb;
   ComPtr<ID3D11SamplerState> sampler;
   ComPtr<ID3D11Query> syncQuery;
@@ -242,15 +248,17 @@ bool GpuFrameOutput::Impl::init() {
     return false;
   }
 
-  ComPtr<ID3DBlob> vsBlob, psBlurBlob, psFinalBlob;
+  ComPtr<ID3DBlob> vsBlob, psBlurBlob, psFinalBlob, psCopyBlob;
   if (!compile("vs_main", "vs_5_0", vsBlob) ||
       !compile("ps_blur_h", "ps_5_0", psBlurBlob) ||
-      !compile("ps_final", "ps_5_0", psFinalBlob)) {
+      !compile("ps_final", "ps_5_0", psFinalBlob) ||
+      !compile("ps_copy", "ps_5_0", psCopyBlob)) {
     return false;
   }
   if (FAILED(device->CreateVertexShader(vsBlob->GetBufferPointer(), vsBlob->GetBufferSize(), nullptr, &vs)) ||
       FAILED(device->CreatePixelShader(psBlurBlob->GetBufferPointer(), psBlurBlob->GetBufferSize(), nullptr, &psBlur)) ||
-      FAILED(device->CreatePixelShader(psFinalBlob->GetBufferPointer(), psFinalBlob->GetBufferSize(), nullptr, &psFinal))) {
+      FAILED(device->CreatePixelShader(psFinalBlob->GetBufferPointer(), psFinalBlob->GetBufferSize(), nullptr, &psFinal)) ||
+      FAILED(device->CreatePixelShader(psCopyBlob->GetBufferPointer(), psCopyBlob->GetBufferSize(), nullptr, &psCopy))) {
     logx::error("gpu beauty: CreateShader failed");
     return false;
   }
@@ -376,17 +384,47 @@ bool GpuFrameOutput::Impl::render(const uint8_t* rgb, int width, int height, int
   if (FAILED(ctx->Map(input.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &map))) return false;
   for (int y = 0; y < height; y++) {
     const uint8_t* s = rgb + (size_t)y * width * 3;
-    uint8_t* d = (uint8_t*)map.pData + (size_t)y * map.RowPitch;
+    uint32_t* d = (uint32_t*)((uint8_t*)map.pData + (size_t)y * map.RowPitch);
     for (int x = 0; x < width; x++) {
-      d[0] = s[0];
-      d[1] = s[1];
-      d[2] = s[2];
-      d[3] = 255;
-      s += 3;
-      d += 4;
+      d[x] = 0xFF000000u | (uint32_t)s[x * 3 + 0] |
+             ((uint32_t)s[x * 3 + 1] << 8) | ((uint32_t)s[x * 3 + 2] << 16);
     }
   }
   ctx->Unmap(input.Get(), 0);
+
+  // 无美颜/滤镜时只做一次 RGB 采样拷贝，跳过肤色、模糊和滤镜计算。
+  if (bp.smooth <= 0.001f && bp.white <= 0.001f && bp.filterIdx == 0) {
+    D3D11_VIEWPORT vp = { 0.f, 0.f, (float)width, (float)height, 0.f, 1.f };
+    ctx->RSSetViewports(1, &vp);
+    ctx->IASetInputLayout(nullptr);
+    ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    ctx->VSSetShader(vs.Get(), nullptr, 0);
+    ctx->PSSetShader(psCopy.Get(), nullptr, 0);
+    ctx->PSSetSamplers(0, 1, sampler.GetAddressOf());
+    ID3D11ShaderResourceView* srvs[1] = { inputSrv.Get() };
+    ctx->PSSetShaderResources(0, 1, srvs);
+    ID3D11RenderTargetView* rt = outs[(size_t)outIdx].rtv.Get();
+    ctx->OMSetRenderTargets(1, &rt, nullptr);
+    ctx->Draw(3, 0);
+    ctx->PSSetShaderResources(0, 1, nullptr);
+    ctx->OMSetRenderTargets(0, nullptr, nullptr);
+    ctx->End(syncQuery.Get());
+    ctx->Flush();
+    bool done = false;
+    for (int i = 0; i < 2000; i++) {
+      HRESULT qhr = ctx->GetData(syncQuery.Get(), nullptr, 0, 0);
+      if (qhr == S_OK) { done = true; break; }
+      if (FAILED(qhr)) break;
+      std::this_thread::yield();
+    }
+    if (!done) {
+      syncQuery.Reset();
+      D3D11_QUERY_DESC qd = {};
+      qd.Query = D3D11_QUERY_EVENT;
+      device->CreateQuery(&qd, &syncQuery);
+    }
+    return true;
+  }
 
   int radius = bp.smooth > 0.001f ? (int)std::lround(bp.smooth * 4.0f) : 0;
   radius = std::max(0, std::min(4, radius));

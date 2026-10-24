@@ -6,6 +6,8 @@
 #include "audio_interface.h"
 #include "config.h"
 #include <atomic>
+#include <cstdlib>
+#include <cstring>
 #include <condition_variable>
 #include <deque>
 #include <thread>
@@ -30,7 +32,13 @@ public:
 
   // ---- 配置 ----
   // 必须在 open 前设置；播放中修改会与 VideoWorker 的模型路径读取竞争
-  void setConfig(const Config& c) { cfg_ = c; }
+  void setConfig(const Config& c) {
+    cfg_ = c;
+    const char* noAuto = getenv("DOMINO_NO_AUTO_DEGRADE");
+    if (noAuto && (strcmp(noAuto, "1") == 0 || strcmp(noAuto, "true") == 0)) {
+      autoDegradeEnabled_.store(false);
+    }
+  }
   // setNoSR(true) 是“用户关闭”，会清空档位与自动状态；
   // setSRTarget(t>0) 会启用 SR 并重置自动降档（手动重选 = 重新尝试）。
   void setNoSR(bool b);
