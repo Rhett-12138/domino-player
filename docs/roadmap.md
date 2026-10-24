@@ -37,13 +37,14 @@
 - [x] 离线 SR 流水线与 Vulkan 推理优化（2026-10，见 `docs/plan-offline-pipeline-2026-10.md`）：SR 推理/后处理两级 worker + 有界队列 + 源/输出帧池；启用 FP16 算术/cooperative matrix/shader local memory/packing layout；SR float→RGB 输出融合并并行转换；受控 A/B 的 2 秒 720p→1080 FullSource 约 19.6s→17.8s（约 -9%），后处理再降约 3–4 倍，最新 11.5→11.3s（4K 11.8→11.3s）；多 SR worker 实测会触发 Vulkan 队列错误，已回退
 
 ### 进行中 / 待办（按优先级）
-1. [ ] **任务中心端到端人工验收**：建任务 → 编码 → 进度 → 断点续编 → 边播放（自动化难驱动 Flutter 控件，需人工过一遍）
-2. [ ] **2K/4K 实时 SR 优化**：1080p 已 29.6fps；2K≈15、4K≈5.9fps。自动降档已兜底（4K/2K→1080p，仍慢→关闭）；真正 2K/4K 30fps 仍需轻量模型/推理优化，零拷贝单项收益有限
-3. [ ] **高质量模型盲测/模型包**：验证 x4plus / x4plus-anime 在真人、动画、文字上的收益；若继续增加模型，做可选模型包/下载（见 `docs/plan-model-library-2026-10.md`）
-4. [ ] **真人 2x/3x 模型**：动画 x2/x3 已接入；SRMD 与当前 NCNN 不兼容，Real-CUGAN 真人实测过度平滑（不建议），Real-ESRGAN x2plus NCNN 尚未取得（见 `docs/plan-realistic-2x3-models-2026-10.md`）；1.5x 建议 2x+缩放
-5. [ ] **离线 SR 大图优化**：FullSource 1080p→4K 中间帧 7680×4320、峰值约 1.9GB；评估 tile + overlap
-6. [ ] 打包分发：安装包/绿色版、图标、关于页
-7. [ ] 移动端验证：Android/iOS 注入 `AudioSink` 实现（引擎已可移植）
+1. [x] **任务中心端到端人工验收**：建任务 → 编码 → 进度 → 断点续编 → 边播放；用户已确认通过
+2. [ ] **可选推理后端**：先做 ONNX Runtime DirectML 离线原型，再切 ORT TensorRT EP；NCNN 保留回退（见 `docs/plan-backends-2026-10.md`）
+3. [ ] **2K/4K 实时 SR 优化**：优化后约 2K≈22、4K≈9 FPS；自动降档已兜底；真正 2K/4K 30fps 仍需后端/轻量模型
+4. [ ] **高质量模型盲测/模型包**：验证 x4plus / x4plus-anime 在真人、动画、文字上的收益；若继续增加模型，做可选模型包/下载（见 `docs/plan-model-library-2026-10.md`）
+5. [ ] **真人 2x/3x 模型**：动画 x2/x3 已接入；SRMD 与当前 NCNN 不兼容，Real-CUGAN 真人实测过度平滑（不建议），Real-ESRGAN x2plus/BSRGAN2X 实测速度不适合替代 General 4x（见 `docs/plan-realistic-2x3-models-2026-10.md`）
+6. [ ] **离线 SR 大图优化**：FullSource 1080p→4K 中间帧 7680×4320、峰值约 1.9GB；评估 tile + overlap
+7. [ ] 打包分发：安装包/绿色版、图标、关于页
+8. [ ] 移动端验证：Android/iOS 注入 `AudioSink` 实现（引擎已可移植）
 
 ## 里程碑
 | 里程碑 | 内容 | 状态 |
