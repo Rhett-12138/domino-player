@@ -127,7 +127,7 @@ void Player::setNoSR(bool b) {
     srTargetW_.store(0);
     srAutoDegraded_.store(false);
   }
-  lagHighSince_ = 0;
+  fpsLowSince_ = 0;
   autoCooldownUntil_ = 0;
   dropUntilPts_.store(0);
   videoCv_.notify_all();
@@ -141,7 +141,7 @@ void Player::setSRTarget(int presetIdx, int targetW) {
   srFailed_.store(false);
   if (targetW > 0) noSR_.store(false);
   // 手动重选档位 = 重新尝试；清掉自动降档的冷却/追帧
-  lagHighSince_ = 0;
+  fpsLowSince_ = 0;
   autoCooldownUntil_ = 0;
   dropUntilPts_.store(0);
   videoCv_.notify_all();
@@ -153,22 +153,26 @@ void Player::maybeAutoDegrade(double now) {
   if (now - lastAutoCheck_ < 0.20) return;
   lastAutoCheck_ = now;
 
-  const double lag = currentMediaClock() - (havePending_ ? pendingPts_ : playhead_);
-  const double frameDur = fps_ > 0 ? 1.0 / fps_ : 0.033;
-  const double lagThreshold = (std::max)(0.30, frameDur * 3.0);
-  if (lag <= lagThreshold) {
-    lagHighSince_ = 0;
+  // 只有实际呈现帧率低于 15 FPS 才降档；A/V 短暂落后不再触发。
+  // 启动/初始化阶段给 3 秒稳定窗口，避免把 engine/JIT 首帧误判为低帧率。
+  if (paused_.load() || now < 3.0) {
+    fpsLowSince_ = 0;
     return;
   }
-  if (lagHighSince_ <= 0) {
-    lagHighSince_ = now;
+  const double fps = fpsDisplay_;
+  if (fps <= 0.0 || fps >= 15.0) {
+    fpsLowSince_ = 0;
     return;
   }
-  if (now - lagHighSince_ < 1.0) return;
+  if (fpsLowSince_ <= 0) {
+    fpsLowSince_ = now;
+    return;
+  }
+  if (now - fpsLowSince_ < 2.0) return;
 
   const int cur = srTargetW_.load();
   if (cur <= 0) return;
-  // 2K/4K 直接降到 1080p；1080p 仍跟不上则关闭 SR。
+  // 2K/4K 直接降到 1080p；1080p 仍低于 15 FPS 则关闭 SR。
   const int next = cur > 1920 ? 1920 : 0;
   srTargetW_.store(next);
   srAutoDegraded_.store(true);
@@ -186,9 +190,9 @@ void Player::maybeAutoDegrade(double now) {
   clearVideoQueue();
   videoCv_.notify_all();
 
-  lagHighSince_ = 0;
+  fpsLowSince_ = 0;
   autoCooldownUntil_ = now + 4.0;
-  fprintf(stderr, "sr auto degrade: %d -> %d (lag %.2fs)\n", cur, next, lag);
+  fprintf(stderr, "sr auto degrade: %d -> %d (fps %.1f)\n", cur, next, fps);
 }
 
 bool Player::open(const std::string& path) {
@@ -207,7 +211,7 @@ bool Player::open(const std::string& path) {
   currentPath_ = path;
   srFailed_.store(false);
   srAutoDegraded_.store(false);
-  lagHighSince_ = 0;
+  fpsLowSince_ = 0;
   autoCooldownUntil_ = 0;
   lastAutoCheck_ = 0;
   duration_ = vid_.duration;
@@ -257,7 +261,7 @@ void Player::close() {
   fps_ = 30;
   hasAudio_ = false;
   eof_ = false;
-  lagHighSince_ = 0;
+  fpsLowSince_ = 0;
   autoCooldownUntil_ = 0;
   lastAutoCheck_ = 0;
 }
@@ -278,7 +282,7 @@ void Player::seekInternal(double t) {
   resetAudio_.store(true);
   playhead_ = t;
   pendingPts_ = t;   // seek 后时钟/同步保护以目标为基准，避免用旧 EOF 帧 PTS 锚定
-  lagHighSince_ = 0;
+  fpsLowSince_ = 0;
   autoCooldownUntil_ = 0;
   lastAutoCheck_ = 0;
   resetClockAnchors();
@@ -320,7 +324,7 @@ void Player::setPaused(bool p) {
     eof_ = false;   // 重新播放即脱离 EOF 态
     // 暂停期间墙钟仍在走，恢复时必须重置呈现基准，否则会按 pump 频率快进追帧
     presentedFrames_ = 0;
-    lagHighSince_ = 0;
+    fpsLowSince_ = 0;
     resetClockAnchors();
   }
   if (hasAudio_) {
@@ -605,7 +609,7 @@ void Player::pump() {
     dropUntilPts_.store(currentMediaClock());
     clearVideoQueue();
     videoCv_.notify_all();
-    lagHighSince_ = 0;   // UI 停摆不是 SR 慢，不能触发自动降档
+    fpsLowSince_ = 0;   // UI 停摆不是 SR 慢，不能触发自动降档
     autoCooldownUntil_ = now + 2.0;
   }
   lastPumpWall_ = now;

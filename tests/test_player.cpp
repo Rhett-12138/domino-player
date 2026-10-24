@@ -55,14 +55,16 @@ private:
 // 慢输出：模拟 2K/4K 管线跟不上音频，使呈现 PTS 落后媒体时钟
 class SlowFrameOutput : public IFrameOutput {
 public:
+  explicit SlowFrameOutput(int delayMs = 100) : delayMs_(delayMs) {}
   void presentFrame(const uint8_t* rgb, int w, int h) override {
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    std::this_thread::sleep_for(std::chrono::milliseconds(delayMs_));
     inner_.presentFrame(rgb, w, h);
   }
   void beginPresent() override { inner_.beginPresent(); }
   void endPresent() override { inner_.endPresent(); }
 
 private:
+  int delayMs_;
   EngineFrameOutput inner_;
 };
 
@@ -246,6 +248,26 @@ TEST(PlayerAutoDegrade) {
     EXPECT_TRUE(p.noSR());
     p.close();
   }
+}
+
+// 实际呈现 FPS >= 15 时不降档（即使 A/V 有轻微落后）
+TEST(PlayerAutoDegradeAbove15Fps) {
+  SlowFrameOutput out(50);   // ~20 FPS
+  Player p(out);
+  p.setAudioSink(std::make_unique<ClockAudioSink>());
+  Config cfg = Config::defaults();
+  cfg.modelBase = testcfg::dataDir() + "/no_such_model";
+  p.setConfig(cfg);
+  p.setSRTarget(0, 3840);
+  p.setNoSR(false);
+  EXPECT_TRUE(p.open(assetPath("test_long.mp4").c_str()));
+  for (int i = 0; i < 1000; i++) {
+    p.pump();
+    sleepMs(5);
+  }
+  EXPECT_EQ(p.srTargetW(), 3840);
+  EXPECT_FALSE(p.srAutoDegraded());
+  p.close();
 }
 
 // SR 关闭时即使输出慢也不应自动改档

@@ -166,7 +166,7 @@ private:
   std::atomic<int> inW_{ 0 };    // 手动 SR 输入宽（--in）
   std::atomic<bool> srInited_{ false };
   std::atomic<bool> srFailed_{ false };
-  double lagHighSince_ = 0;
+  double fpsLowSince_ = 0;
   double autoCooldownUntil_ = 0;
   double lastAutoCheck_ = 0;
 
