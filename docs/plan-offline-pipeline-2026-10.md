@@ -63,7 +63,18 @@ use_packing_layout = true;
 
 实测（2s 720p→1080 FullSource）：**11.51s→11.26s**；4K FullSource：**11.80s→11.33s**。提升约 **2%–4%**，主要来自 GPU 推理期间重叠 CPU 输出转换。
 
-### 5. 多 SR worker 实验（未采用）
+### 5. 单队列 batch 推理验证（不采用）
+
+验证结论：**当前 NCNN 模型/运行时无法做单队列 batch**。
+
+- NCNN `Mat` 只有 `w/h/d/c` 维度，没有 batch/n 维度；`Extractor::input` 一次只接受一个样本。
+- RealESRGAN compact 首层卷积固定 `in_channels=3`，不能把两帧拼成 6 通道或 2 个样本直接送进网络。
+- 把两帧横向拼成一张大图会改变空间语义，接缝和跨帧上下文会污染结果，不能作为等价 batch。
+- 多 extractor/多 worker 已在上一项验证中触发 `vkQueueSubmit failed -4`，单队列串行又不会带来吞吐收益。
+
+需要 batch 时的正确路径是 **ONNX Runtime / TensorRT / DirectML 的 batch 输入**，或修改模型/后端支持 batch；这不是当前 NCNN 栈的一行优化。
+
+### 6. 多 SR worker 实验（未采用）
 
 尝试过 2 个独立 `SR`/Net 的 worker：
 
@@ -73,7 +84,7 @@ use_packing_layout = true;
 
 因此保留单 SR worker，多 worker 方案回退。
 
-### 6. 没有改动的部分
+### 7. 没有改动的部分
 
 - 视频帧 PTS 仍由 `startFrame + count` 生成，续编偏移不变。
 - 音频起点归一、音频最多领先视频 100ms、AAC ADTS BSF 逻辑不变。
