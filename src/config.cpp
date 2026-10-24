@@ -18,7 +18,9 @@ Config Config::defaults() {
   const char* onnx = getenv("DOMINO_ONNX_DIR");
   c.onnxBase = (onnx && *onnx) ? onnx : DOMINO_DEFAULT_ONNX_DIR;
   const char* noTrt = getenv("DOMINO_NO_TRT");
-  c.useTrt = !(noTrt && (_stricmp(noTrt, "1") == 0 || _stricmp(noTrt, "true") == 0));
+  c.useTrt = !(noTrt && (strcmp(noTrt, "1") == 0 ||
+                         strcmp(noTrt, "true") == 0 ||
+                         strcmp(noTrt, "TRUE") == 0));
   const char* a = getenv("APPDATA");
   c.dataRoot = std::string(a ? a : ".") + "/DominoPlayer";
   return c;
