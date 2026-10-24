@@ -53,6 +53,19 @@ inline const char* srModelBinName(SRModel m) {
   }
 }
 
+// 仅标准/HQ 真人模型提供 FP16 ONNX；动画/2x/3x 暂走 NCNN。
+inline const char* srOnnxName(SRModel m) {
+  switch (m) {
+    case SRModel::Realistic: return "realesr-general-x4v3-fp16.onnx";
+    case SRModel::RealisticHQ: return "realesrgan-x4plus-fp16.onnx";
+    default: return nullptr;
+  }
+}
+
+inline bool srModelSupportsTrt(SRModel m) {
+  return srOnnxName(m) != nullptr && srModelScale(m) == 4;
+}
+
 inline const char* srModelId(SRModel m) {
   switch (m) {
     case SRModel::Anime: return "anime";
@@ -102,12 +115,19 @@ inline std::string joinModelPath(const std::string& base, const char* name) {
 // 应用配置：路径等可注入（测试可用临时目录覆盖），避免硬编码
 struct Config {
   std::string modelBase;   // NCNN 模型目录（末尾分隔符可有可无）
+  std::string onnxBase;    // TensorRT 可选 ONNX 模型目录
   std::string dataRoot;    // 任务数据根目录（其下建 sr-tasks/）
+  bool useTrt = true;      // 可用时优先 TensorRT-RTX，失败自动回退 NCNN
 
   std::string srParam() const { return joinModelPath(modelBase, srModelParamName(SRModel::Realistic)); }
   std::string srBin() const { return joinModelPath(modelBase, srModelBinName(SRModel::Realistic)); }
   std::string srParam(SRModel m) const { return joinModelPath(modelBase, srModelParamName(m)); }
   std::string srBin(SRModel m) const { return joinModelPath(modelBase, srModelBinName(m)); }
+  std::string srOnnx(SRModel m) const {
+    const char* name = srOnnxName(m);
+    return name ? joinModelPath(onnxBase, name) : std::string();
+  }
+  std::string trtCacheDir() const { return joinModelPath(dataRoot, "trt-rtx"); }
 
   // 默认配置：模型目录取仓库内固定路径，数据根取 %APPDATA%/DominoPlayer
   static Config defaults();

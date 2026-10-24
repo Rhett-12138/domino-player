@@ -40,37 +40,47 @@ int main(int argc, char** argv) {
   const std::string offlineSrc = argc > 2 ? argv[2] : assets + "/test_av.mp4";
   const int offlineTarget = argc > 3 ? atoi(argv[3]) : 1920;
   const int offlineModel = argc > 4 ? atoi(argv[4]) : 0;
+  const int directModel = argc > 5 ? atoi(argv[5]) : 0;
+  const bool directOnly = argc > 6 && std::string(argv[6]) == "--direct-only";
+  const bool offlineOnly = argc > 7 && std::string(argv[7]) == "--offline-only";
   Config cfg = Config::defaults();
 
-  // 1) 直接测 SR 推理：720p 源 → 目标宽 / 4 的模型输入
-  SR sr;
-  if (!sr.init(cfg.srParam().c_str(), cfg.srBin().c_str())) {
-    printf("SR init failed (model/GPU unavailable)\n");
-    return 1;
-  }
-  MediaStream ms;
-  if (!ms.open(src.c_str())) { printf("open source failed: %s\n", src.c_str()); return 1; }
-  std::vector<uint8_t> rgb((size_t)ms.vw * ms.vh * 3);
-  double pts = 0;
-  if (ms.nextVideoFrame(rgb.data(), &pts) != 0) { printf("decode failed\n"); return 1; }
+  if (!offlineOnly) {
+    // 1) 直接测 SR 推理：720p 源 → 目标宽 / 4 的模型输入
+    SR sr;
+    if (!sr.init(cfg.srParam((SRModel)directModel).c_str(),
+                 cfg.srBin((SRModel)directModel).c_str())) {
+      printf("SR init failed (model/GPU unavailable)\n");
+      return 1;
+    }
+    MediaStream ms;
+    if (!ms.open(src.c_str())) { printf("open source failed: %s\n", src.c_str()); return 1; }
+    std::vector<uint8_t> rgb((size_t)ms.vw * ms.vh * 3);
+    double pts = 0;
+    if (ms.nextVideoFrame(rgb.data(), &pts) != 0) { printf("decode failed\n"); return 1; }
 
-  printf("direct SR (%dx%d source):\n", ms.vw, ms.vh);
-  printf("  target  inWxInH      ms/frame   theory fps\n");
-  for (int target : { 1920, 2560, 3840 }) {
-    const int inW = target / 4;
-    std::vector<uint8_t> out;
-    for (int i = 0; i < 3; i++) sr.process(rgb.data(), ms.vw, ms.vh, inW, out);
-    const int iters = 20;
-    double t0 = nowSec();
-    int ow = 0;
-    for (int i = 0; i < iters; i++) ow = sr.process(rgb.data(), ms.vw, ms.vh, inW, out);
-    double dt = nowSec() - t0;
-    double msPer = dt * 1000.0 / iters;
-    printf("  %5d   %4dx%-4d   %8.2f   %8.2f   (out %d)\n", target, inW,
-           (ms.vh * inW / ms.vw) & ~1, msPer, 1000.0 / msPer, ow);
+    printf("direct SR (%dx%d source):\n", ms.vw, ms.vh);
+    printf("  target  inWxInH      ms/frame   theory fps\n");
+    for (int target : { 1920, 2560, 3840 }) {
+      const int inW = target / 4;
+      std::vector<uint8_t> out;
+      for (int i = 0; i < 3; i++) sr.process(rgb.data(), ms.vw, ms.vh, inW, out);
+      const int iters = 20;
+      double t0 = nowSec();
+      int ow = 0;
+      for (int i = 0; i < iters; i++) ow = sr.process(rgb.data(), ms.vw, ms.vh, inW, out);
+      double dt = nowSec() - t0;
+      double msPer = dt * 1000.0 / iters;
+      printf("  %5d   %4dx%-4d   %8.2f   %8.2f   (out %d)\n", target, inW,
+             (ms.vh * inW / ms.vw) & ~1, msPer, 1000.0 / msPer, ow);
+    }
+    sr.clear();
+    ms.close();
+    if (directOnly) {
+      ncnn::destroy_gpu_instance();
+      return 0;
+    }
   }
-  sr.clear();
-  ms.close();
 
   // 2) 离线质量档：同一 720p 源，比较 Fast/Balanced/FullSource 输入
   printf("\nOffline encode (2s -> %d, CRF18):\n", offlineTarget);
@@ -98,6 +108,10 @@ int main(int argc, char** argv) {
     printf("  %-9s  %7.2f   %6.1f   %s\n", m.name, dt,
            ec ? 0.0 : sz / (1024.0 * 1024.0), out.c_str());
     if (!ok) printf("  ^ encode failed\n");
+  }
+  if (offlineOnly) {
+    ncnn::destroy_gpu_instance();
+    return 0;
   }
 
   // 3) 端到端 Player：解码 + SR + 呈现（无 CPU 美颜）

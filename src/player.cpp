@@ -26,6 +26,8 @@ void Player::shutdown() {
   }
   currentPath_.clear();
   resetClockAnchors();
+  trt_.clear();
+  useTrt_.store(false);
   sr_.clear();   // 全局 GPU 实例由前端在停止所有任务后统一销毁
   srInited_.store(false);
   srFailed_.store(false);
@@ -92,8 +94,22 @@ void Player::audioFeed() {
 
 void Player::ensureSR() {
   if (noSR_.load() || srFailed_.load()) return;
-  if (srInited_.load() && !sr_.ready()) srInited_.store(false);
-  if (srInited_.load()) return;
+  if (srInited_.load()) {
+    if ((useTrt_.load() && trt_.ready()) || (!useTrt_.load() && sr_.ready())) return;
+    srInited_.store(false);
+  }
+  if (cfg_.useTrt) {
+    const SRModel model = SRModel::Realistic;
+    const std::string onnx = cfg_.srOnnx(model);
+    if (!onnx.empty() &&
+        trt_.init(onnx.c_str(), cfg_.trtCacheDir().c_str(), "realistic", 4, 1920, 1080)) {
+      useTrt_.store(true);
+      srInited_.store(true);
+      return;
+    }
+    trt_.clear();
+  }
+  useTrt_.store(false);
   if (sr_.init(cfg_.srParam().c_str(), cfg_.srBin().c_str())) {
     srInited_.store(true);
   } else {
@@ -434,7 +450,9 @@ void Player::videoLoop() {
 
     if (needSR) {
       const int inW = inW_.load() > 0 ? inW_.load() : srTargetW_.load() / 4;
-      const int sw = sr_.process(srcBuf_.data(), vid_.vw, vid_.vh, inW, f.rgb);
+      const int sw = useTrt_.load()
+        ? trt_.process(srcBuf_.data(), vid_.vw, vid_.vh, inW, f.rgb)
+        : sr_.process(srcBuf_.data(), vid_.vw, vid_.vh, inW, f.rgb);
       if (sw > 0) {
         f.w = sw;
         f.h = (int)(f.rgb.size() / (size_t)sw / 3);

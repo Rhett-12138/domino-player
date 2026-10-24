@@ -8,6 +8,12 @@ set(REPO_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../..")
 set(ENGINE_SRC "${REPO_ROOT}/src")
 set(FFMPEG_ROOT "${REPO_ROOT}/libs/ffmpeg/ffmpeg-master-latest-win64-gpl-shared")
 set(NCNN_ROOT "${REPO_ROOT}/libs/ncnn/ncnn-20260526-windows-vs2022-shared")
+set(DOMINO_TRT_RTX_ROOT "${REPO_ROOT}/libs/tensorrt-rtx" CACHE PATH "TensorRT-RTX SDK root")
+set(DOMINO_HAS_TRT_RTX FALSE)
+if (EXISTS "${DOMINO_TRT_RTX_ROOT}/include/NvInfer.h" AND
+    EXISTS "${DOMINO_TRT_RTX_ROOT}/lib/tensorrt_rtx_1_7.lib")
+  set(DOMINO_HAS_TRT_RTX TRUE)
+endif()
 
 add_library(domino_engine SHARED
   engine_bridge.cpp
@@ -17,6 +23,7 @@ add_library(domino_engine SHARED
   ${ENGINE_SRC}/encode.cpp
   ${ENGINE_SRC}/task.cpp
   ${ENGINE_SRC}/sr.cpp
+  ${ENGINE_SRC}/trt_sr.cpp
   ${ENGINE_SRC}/frame_output.cpp
   ${ENGINE_SRC}/player.cpp
   ${ENGINE_SRC}/audio.cpp
@@ -47,6 +54,19 @@ target_link_libraries(domino_engine PRIVATE
 target_compile_definitions(domino_engine PRIVATE NCNN_VULKAN NOMINMAX)
 target_compile_definitions(domino_engine PRIVATE
   "DOMINO_DEFAULT_MODEL_DIR=\"${REPO_ROOT}/assets/models/sr/ncnn/\"")
+target_compile_definitions(domino_engine PRIVATE
+  "DOMINO_DEFAULT_ONNX_DIR=\"${REPO_ROOT}/assets/models/sr/onnx/\"")
+if (DOMINO_HAS_TRT_RTX)
+  target_include_directories(domino_engine PRIVATE
+    ${DOMINO_TRT_RTX_ROOT}/include
+    ${ENGINE_SRC}/trt
+  )
+  target_link_libraries(domino_engine PRIVATE
+    ${DOMINO_TRT_RTX_ROOT}/lib/tensorrt_rtx_1_7.lib
+    ${DOMINO_TRT_RTX_ROOT}/lib/tensorrt_onnxparser_rtx_1_7.lib
+  )
+  target_compile_definitions(domino_engine PRIVATE DOMINO_HAS_TRT_RTX=1)
+endif()
 target_compile_features(domino_engine PRIVATE cxx_std_17)
 if (MSVC)
   target_compile_options(domino_engine PRIVATE /utf-8)
@@ -63,4 +83,12 @@ add_custom_command(TARGET domino_engine POST_BUILD
     ${NCNN_ROOT}/x64/bin/ncnn.dll
     $<TARGET_FILE_DIR:domino_engine>
 )
+if (DOMINO_HAS_TRT_RTX)
+  add_custom_command(TARGET domino_engine POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+      ${DOMINO_TRT_RTX_ROOT}/bin/tensorrt_rtx_1_7.dll
+      ${DOMINO_TRT_RTX_ROOT}/bin/tensorrt_onnxparser_rtx_1_7.dll
+      $<TARGET_FILE_DIR:domino_engine>
+  )
+endif()
 # 拷贝到 runner 目录的命令见 runner/CMakeLists.txt（runner 目标存在后才能用 $<TARGET_FILE_DIR>）。

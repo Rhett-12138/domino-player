@@ -26,3 +26,17 @@ TEST(ConfigPathInjection) {
   EXPECT_STREQ(c.srParam().c_str(), "C:\\models/RealESRGAN_General_x4_v3.param");
   EXPECT_STREQ(joinModelPath("", "x.bin").c_str(), "x.bin");
 }
+
+TEST(ConfigTrtModels) {
+  Config c;
+  c.onnxBase = "C:/onnx";
+  EXPECT_STREQ(c.srOnnx(SRModel::Realistic).c_str(),
+               "C:/onnx/realesr-general-x4v3-fp16.onnx");
+  EXPECT_STREQ(c.srOnnx(SRModel::RealisticHQ).c_str(),
+               "C:/onnx/realesrgan-x4plus-fp16.onnx");
+  EXPECT_TRUE(c.srOnnx(SRModel::Anime).empty());
+  EXPECT_TRUE(srModelSupportsTrt(SRModel::Realistic));
+  EXPECT_TRUE(srModelSupportsTrt(SRModel::RealisticHQ));
+  EXPECT_FALSE(srModelSupportsTrt(SRModel::AnimeX2));
+  EXPECT_STREQ(c.trtCacheDir().c_str(), "trt-rtx");
+}

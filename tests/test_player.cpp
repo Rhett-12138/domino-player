@@ -185,6 +185,7 @@ TEST(PlayerSRFailsFallsBackToSource) {
   p.setAudioSink(std::make_unique<DummyAudioSink>());
   Config cfg = Config::defaults();
   cfg.modelBase = testcfg::dataDir() + "/no_such_model";
+  cfg.useTrt = false;   // 该用例专门验证 NCNN 初始化失败路径
   p.setConfig(cfg);
   p.setSRTarget(0, 1920);
   p.setNoSR(false);

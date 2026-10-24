@@ -1,6 +1,6 @@
 # Domino Player
 
-跨平台视频**超分 + 美颜**播放器：**Flutter 前端**（当前 Windows 桌面）+ **可移植 C++ 引擎**（FFmpeg 解码 / 编码 + NCNN Vulkan 超分）。
+跨平台视频**超分 + 美颜**播放器：**Flutter 前端**（当前 Windows 桌面）+ **可移植 C++ 引擎**（FFmpeg 解码 / 编码 + NCNN Vulkan 超分；NVIDIA RTX 可用 TensorRT-RTX 加速）。
 
 当前重点是把「实时播放」和「离线超分任务」做成一套可用的桌面工具：播放页支持沉浸式全屏、侧边美化 / 播放历史、实时 SR；任务中心支持新建、暂停、断点续编、边播放和删除任务。
 
@@ -28,11 +28,12 @@
 
 ### 实时超分（实验性）
 
-- 播放页可切换 **SR 关闭 / 1080p / 2K / 4K**，由 NCNN Vulkan 实时推理。
+- 播放页可切换 **SR 关闭 / 1080p / 2K / 4K**；NVIDIA RTX 上自动使用 TensorRT-RTX，其他 Vulkan 显卡走 NCNN。
 - 解码和 SR 已移到原生 VideoWorker，UI 线程只负责取帧和呈现；seek 带 generation，避免旧帧回跳。
-- 720p 源实时 1080p 约 **29.6 FPS**；2K / 4K 约 **15 / 5.9 FPS**，取决于显卡和片源。
+- RTX 4070 SUPER、720p 源：TensorRT-RTX 下 1080p / 2K 约 **29.6 FPS**（源 30fps 上限），4K 约 **22.65 FPS**；NCNN 回退约 30 / 21.7 / 9 FPS。
 - **自动降档**：4K / 2K 持续落后音频约 1 秒会降到 1080p；1080p 仍跟不上则关闭 SR。手动选档会清除自动降档状态并重试。
 - 开启 SR 后仍可叠加 GPU 美颜和滤镜。
+- 强制兼容模式：设置环境变量 `DOMINO_NO_TRT=1` 可关闭 TensorRT，全部走 NCNN。
 
 ### 离线超分任务中心
 
@@ -44,6 +45,7 @@
 - **输出质量**：默认高质量 FullSource 输入（源分辨率，最高 1920 宽），4x 模型推理后用 Lanczos 缩放到目标分辨率；高质量模型档细节更好但更慢。
 - **离线流水线**：SR 推理与 float→RGB 后处理拆成两级 worker，并与解码、Lanczos 缩放和 x264 编码重叠；使用有界队列和源/输出缓冲池，按 seq 取回保证 PTS 顺序。NCNN 启用 FP16 算术、cooperative matrix、shader local memory 和 packing layout（不支持时自动回退；设置 `DOMINO_NO_VULKAN_FASTPATH=1` 可关闭快路径）。
 - **SR 输出后处理**：float planar → RGB24 的乘 255、裁剪和写出融合为一遍，大图最多 8 线程并行；4K 后处理明显快于旧的 `to_pixels` 双遍路径，输出逐字节一致。
+- **TensorRT-RTX**：RTX 机器上标准/HQ 模型自动走 FP16 ONNX + TensorRT-RTX（免 CUDA Toolkit，便携运行时）；2s 720p→1080 FullSource 约 **5.1s**，x4plus 720p→4K 约 **31.9s**；失败自动回退 NCNN。
 
 ### 模型库
 
@@ -55,6 +57,8 @@
 | `realesr-animevideov3-x4` | 动画标准 | 4x | 更大放大倍率 |
 | `realesrgan-x4plus` | 真人/实拍高质量 | 4x | 输入上限 960，慢但细节更强 |
 | `realesrgan-x4plus-anime` | 动画高质量 | 4x | 输入上限 960，动画线条更干净 |
+| `realesr-general-x4v3-fp16.onnx` | TensorRT 真人标准 | 4x | 与 NCNN 标准模型同源，TensorRT 用 |
+| `realesrgan-x4plus-fp16.onnx` | TensorRT 真人高质量 | 4x | 与 NCNN HQ 模型同源，TensorRT 用 |
 
 - 动画标准会按 `目标宽 / 源宽` 自动选 x2 / x3 / x4；真人标准目前只有 x4。
 - 高质量档 `x4plus` / `x4plus-anime` 的输入宽限制为 960，超出会先缩放，避免显存溢出。
@@ -100,8 +104,11 @@
 - 预编译依赖置于 `libs/`（**git 忽略，需自行放置**）：
   - `libs/ffmpeg/ffmpeg-master-latest-win64-gpl-shared/`
   - `libs/ncnn/ncnn-20260526-windows-vs2022-shared/`
+  - 可选：`libs/tensorrt-rtx/`（NVIDIA TensorRT for RTX，Windows x64，CUDA 12.9 版；本地放置，git 忽略）
 
-超分模型放在 `assets/models/sr/ncnn/`，包括标准、动画 x2/x3/x4 和高质量模型（见上表）。
+超分模型放在 `assets/models/sr/ncnn/`，TensorRT 的 FP16 ONNX 放在 `assets/models/sr/onnx/`；包括标准、动画 x2/x3/x4 和高质量模型（见上表）。
+
+TensorRT-RTX 是可选的 NVIDIA 加速后端：没有 `libs/tensorrt-rtx/` 时仍可完整构建和运行（NCNN 回退）。运行时不需要安装 CUDA Toolkit，但需要 NVIDIA RTX 显卡和驱动；从 [NVIDIA TensorRT for RTX](https://developer.nvidia.com/tensorrt-rtx) 下载 Windows x64 CUDA 12.9 包，解压后把 `bin/`、`include/`、`lib/` 放到 `libs/tensorrt-rtx/` 即可。
 
 ## 构建与运行
 
@@ -169,7 +176,8 @@ ctest --test-dir build -C Release --output-on-failure      # ~5s，应 0 failed
 
 ## 已知限制
 
-- 2K / 4K 实时 SR 还达不到稳定 30 FPS，复杂片源依赖自动降档；真正 4K 实时仍需要更轻量的模型或推理优化。
+- TensorRT-RTX 让 4K 实时 SR 达到约 22.65 FPS，但受输出转换/上屏限制仍未稳定 30 FPS；复杂片源仍保留自动降档。
+- TensorRT-RTX 运行时约 220MB，发布包会明显变大；后续可拆成可选高性能组件。首次使用需要构建 engine 缓存（约 12–20s）。
 - 真人 2x/3x 暂未接入可用模型；动画 x2/x3 已支持，真人 1.5x 可用 2x 后缩放。
 - `x4plus` / `x4plus-anime` 输入宽限制 960，质量更好但明显更慢；1080p→4K FullSource 中间帧较大，峰值内存约 1.9GB。
 - 移动端尚未实机验证；引擎接口已按可移植方式拆分。
@@ -185,5 +193,5 @@ ctest --test-dir build -C Release --output-on-failure      # ~5s，应 0 failed
 
 ## 许可
 
-本项目源码以 [MIT](LICENSE) 发布。第三方组件（FFmpeg / NCNN / Flutter / 模型权重）各有其许可，
-**分发二进制前请先读** [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md)（尤其 FFmpeg GPL 的传染性）。
+本项目源码以 [MIT](LICENSE) 发布。第三方组件（FFmpeg / NCNN / Flutter / TensorRT-RTX / 模型权重）各有其许可，
+**分发二进制前请先读** [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md)（尤其 FFmpeg GPL 的传染性和 TensorRT-RTX 运行时分发条款）。

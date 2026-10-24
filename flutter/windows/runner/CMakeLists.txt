@@ -57,9 +57,23 @@ add_custom_command(TARGET ${BINARY_NAME} POST_BUILD
     ${NCNN_BIN}/ncnn.dll
     "$<TARGET_FILE_DIR:${BINARY_NAME}>"
 )
+if (EXISTS "${REPO_ROOT}/libs/tensorrt-rtx/bin/tensorrt_rtx_1_7.dll")
+  add_custom_command(TARGET ${BINARY_NAME} POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+      "${REPO_ROOT}/libs/tensorrt-rtx/bin/tensorrt_rtx_1_7.dll"
+      "${REPO_ROOT}/libs/tensorrt-rtx/bin/tensorrt_onnxparser_rtx_1_7.dll"
+      "$<TARGET_FILE_DIR:${BINARY_NAME}>"
+  )
+endif()
 # 超分模型拷到 exe 同目录（assets/models/sr/ncnn），运行时不依赖仓库路径
 add_custom_command(TARGET ${BINARY_NAME} POST_BUILD
   COMMAND ${CMAKE_COMMAND} -E copy_directory
     "${REPO_ROOT}/assets/models"
     "$<TARGET_FILE_DIR:${BINARY_NAME}>/assets/models"
+)
+# TensorRT-RTX 许可/致谢（NVIDIA 运行时随包分发时需要）
+add_custom_command(TARGET ${BINARY_NAME} POST_BUILD
+  COMMAND ${CMAKE_COMMAND} -E copy_directory
+    "${REPO_ROOT}/assets/third_party"
+    "$<TARGET_FILE_DIR:${BINARY_NAME}>/assets/third_party"
 )

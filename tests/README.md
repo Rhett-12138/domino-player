@@ -14,7 +14,10 @@ ctest --test-dir build -C Release
 - `config`：默认配置与模型路径拼接（注入目录带/不带末尾分隔符都必须合法）
 - `beauty`：肤色判定/磨皮/美白/全部滤镜预设方向
 - `frame_output`：CPU 回退路径的美颜快路径/双缓冲交换/滤镜缩略图/垂直高斯上下对称
-- `sr`：NCNN 模型冒烟（无 GPU 时自动跳过）
+- `sr`：NCNN 模型冒烟（无 GPU 时自动跳过）；TensorRT 缺模型/无 GPU 时安全失败并回退（不构建 engine）
+- `config`：ONNX 路径、TensorRT 支持模型判断、engine 缓存目录
+
+CTest 默认不关闭 TensorRT；无 NVIDIA/无 ONNX 环境会自动回退 NCNN（不会因缺少 TensorRT 失败）。需要强制 NCNN 时在运行前设置 `DOMINO_NO_TRT=1`。
 
 GPU 着色器美颜（`flutter/native/gpu_frame_output.cpp`）依赖真实 D3D11/Flutter GPU surface，
 headless 单测覆盖不到；需按 `docs/plan-gpu-beauty-2026-10.md` 做实机冒烟：播放 1080p/4K、
@@ -27,6 +30,10 @@ cmake --build build --target domino_sr_bench --config Release
 ./build/Release/domino_sr_bench.exe ./tests/assets
 # 可选：离线质量对比（源路径、目标宽；默认 test_av / 1920）
 ./build/Release/domino_sr_bench.exe ./tests/assets "%TEMP%/test_1080.mp4" 2560
+# 可选：只跑离线编码（模型编号 0=标准，2=HQ；最后一个参数）
+./build/Release/domino_sr_bench.exe ./tests/assets ./tests/assets/test_av.mp4 3840 2 0 0 --offline-only
+# 强制 NCNN 对比
+$env:DOMINO_NO_TRT=1; ./build/Release/domino_sr_bench.exe ...
 ```
 
 输出：720p 源 → 1080p/2K/4K 的直接 `SR::process` ms/帧、理论 FPS，Player 端到端 FPS，以及 Fast/Balanced/FullSource 离线编码耗时/文件大小/路径。

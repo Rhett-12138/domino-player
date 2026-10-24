@@ -1,5 +1,6 @@
 #include "test_common.h"
 #include "sr.h"
+#include "trt_sr.h"
 #include "config.h"
 #include <ncnn/gpu.h>
 #include <vector>
@@ -21,4 +22,11 @@ TEST(SrSmoke) {
   EXPECT_TRUE(out.size() >= (size_t)w * inH * 3);  // 输出像素足够
   sr.clear();
   ncnn::destroy_gpu_instance();  // 释放 Vulkan 全局实例，避免退出时崩溃
+}
+
+// TensorRT 是可选后端：模型缺失/无 GPU 时必须安全失败，由调用方回退 NCNN。
+TEST(TrtMissingModelFails) {
+  TensorRtSR trt;
+  EXPECT_FALSE(trt.init("Z:/missing/model.onnx", "Z:/missing/cache", "test", 4, 960, 540));
+  EXPECT_FALSE(trt.ready());
 }

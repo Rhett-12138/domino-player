@@ -114,7 +114,8 @@ static bool mergePartIntoMain(const std::string& main, const std::string& partPa
 }
 
 void TaskCenter::init(const std::string& root) {
-  dir_ = root.empty() ? (Config::defaults().dataRoot + "/sr-tasks") : (root + "/sr-tasks");
+  dataRoot_ = root.empty() ? Config::defaults().dataRoot : root;
+  dir_ = dataRoot_ + "/sr-tasks";
   std::error_code ec;
   std::filesystem::create_directories(dir_, ec);
   // 扫描 <dir>/*/meta.tsv
@@ -223,6 +224,9 @@ void TaskCenter::start(Task* t) {
   eo.preview = previewFn_;
   eo.previewUserdata = previewUd_;
   eo.modelBase = modelBase_.empty() ? Config::defaults().modelBase : modelBase_;
+  eo.onnxBase = onnxBase_.empty() ? Config::defaults().onnxBase : onnxBase_;
+  const std::string dataRoot = dataRoot_.empty() ? Config::defaults().dataRoot : dataRoot_;
+  eo.trtCacheDir = dataRoot + "/trt-rtx";
   eo.model = t->model;
   eo.srInput = t->srInput;
   std::string partPath = t->temp + ".resume";

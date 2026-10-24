@@ -1,98 +1,86 @@
-# 可选推理后端评估（2026-10）
+# 推理后端：TensorRT-RTX 接入（2026-10）
 
-> 决策：**先做高性能 TensorRT/CUDA，兼容性后续再补。**  
-> 当前基线：RTX 4070 SUPER，NCNN Vulkan，1080p/2K/4K 直接 SR 约 20/44/109ms，离线 2s 720p→1080 FullSource 约 11.3s。
-
-## 结论
-
-1. **首选 TensorRT**：在 RTX 上性能最高，支持 FP16、静态/动态 shape、batch 和 engine cache。
-2. **CUDA EP 作为中间方案**：如果 TensorRT 集成/版本兼容太麻烦，先用 ONNX Runtime CUDA EP 验证。
-3. **NCNN 保留最终回退**：现有功能不能因缺少 CUDA/TensorRT 而不可用。
-4. **DirectML 暂缓**：适合以后补 AMD/Intel 兼容性，但当前性能不是最优，且 ORT DirectML 处于维护模式。
-5. **不先做 native CUDA 自定义 kernel**：先用 ONNX + TensorRT/CUDA EP，减少维护面。
-
-## 候选对比
-
-| 后端 | 硬件 | Batch | 性能潜力 | 依赖/分发 | 本轮结论 |
-|---|---|---:|---|---|---|
-| **TensorRT（native 或 ORT EP）** | NVIDIA RTX/数据中心 | 支持 | **最高** | CUDA + TensorRT；ORT EP 版本矩阵、engine cache | **首选** |
-| **ONNX Runtime CUDA EP** | NVIDIA | 支持 | 中高 | ORT GPU + CUDA/cuDNN | 次选/中间验证 |
-| NCNN Vulkan（现状） | Vulkan 全厂商 | 无 | 基准 | 已随包 | 回退 |
-| ORT DirectML | Windows DX12 全厂商 | 支持 | 中 | ORT + DirectML，无 CUDA | 暂缓 |
-| OpenVINO | Intel | 支持 | Intel 上高 | Intel 运行时 | 不选 |
-| WinML | Windows | 视 EP | 中 | Windows ML 打包 | 后续观察 |
-
-## 推荐路线
-
-### Phase 1：ONNX 导出（已开始）
-
-已增加：
-
-- `tools/export_onnx.py`：把 RealESRGAN compact checkpoint 导出为带动态 batch/H/W 的 ONNX。
-- `tools/bench_onnx.py`：按 provider 跑 batch、输入尺寸和循环基准。
-
-已用 `realesr-general-x4v3.pth` 验证 ONNX 导出（输入 `1×3×64×64`，输出 `1×3×256×256`，opset 17）。
-
-### Phase 2：TensorRT / CUDA 基准
-
-在 RTX 4070 SUPER 上安装：
-
-- CUDA 12.9（或与 TensorRT 版本匹配的 CUDA）
-- TensorRT 10.9 / 11.x（或 TensorRT for RTX）
-- `onnxruntime-gpu`（CUDA/TensorRT EP）
-
-然后跑同一 ONNX 模型：
-
-```bash
-python tools/bench_onnx.py --model ...onnx --provider tensorrt --width 960 --height 540 --batch 1
-python tools/bench_onnx.py --model ...onnx --provider tensorrt --width 960 --height 540 --batch 2
-python tools/bench_onnx.py --model ...onnx --provider cuda --width 960 --height 540 --batch 1
-```
-
-对比 NCNN 的 1080p/2K/4K 直接 SR 和 2s 离线 FullSource。
-
-### Phase 3：接入可选后端
-
-新增 `ISrBackend`：
-
-```text
-init(model, options)
-infer(batchRGB, inputW) -> RGB/planar output
-backendName()
-```
-
-- `NcnnSrBackend`：现有 `SR`，默认回退。
-- `TensorRtSrBackend` / `OrtSrBackend`：可选 DLL/运行时；初始化失败自动回退 NCNN。
-- 统一输出 RGB24，复用现有后处理/编码流水线。
-- 任务 `meta.tsv` 记录 backend；旧任务默认 NCNN，续编不换后端。
-- 普通用户默认自动选择；高级设置才显示 TensorRT/CUDA 状态。
-
-### Phase 4：性能参数
-
-- FP16 优先；INT8 只在画质验证通过后考虑。
-- TensorRT engine cache 放在 `%APPDATA%\DominoPlayer\trt-cache`，按 GPU/模型/精度/形状区分。
-- 离线 batch=2 先验证；实时保持 batch=1。
-- 4K 先不 batch，避免显存峰值。
-- 动态 shape 用 profile min/opt/max；固定输出档位可进一步用静态 shape。
-
-## 当前环境阻塞
-
-- 驱动：NVIDIA 610.88。
-- 当前 Python `onnxruntime` 只有 CPU provider；没有 CUDA/DirectML。
-- 未安装 CUDA Toolkit / TensorRT。
-- TensorRT Windows 包和 CUDA 运行时体积较大；需要先安装/下载后才能做真实 GPU 基准。
-
-因此当前已经完成 **ONNX 导出工具和基准脚本**；真实 TensorRT/CUDA 数据必须在安装运行时后补齐，不能用 CPU 数字代替。
-
-## 风险
-
-- TensorRT engine 与 GPU/驱动/TensorRT 版本绑定，首次构建需要缓存和超时处理。
-- 运行时体积、许可和 Windows 分发成本。
-- 动态 shape 和 batch 的显存峰值；4K 需单独限制。
-- ORT TensorRT EP 与 TensorRT 版本矩阵需要固定，否则可能回退 CUDA/CPU。
-- 画质必须用真人脸部/发丝/文字/夜景对比，不能只看速度。
+> 决策：**高性能优先，TensorRT-RTX 已接入；NCNN 保留回退。**  
+> 设备：RTX 4070 SUPER，驱动 610.88；TensorRT-RTX 1.7.1.116（CUDA 12.9 版）。
 
 ## 结论
 
-**先做 TensorRT；CUDA EP 作为后备。**  
-当前代码层面已完成 ONNX 导出/基准工具，下一步是安装 CUDA + TensorRT 运行时，在 RTX 4070 SUPER 上得到真实 batch=1/2 数据，再决定是否接 native TensorRT 还是 ORT TensorRT EP。
+- 采用 **TensorRT for RTX 1.7.1**：便携 ZIP，解压约 221MB，**不需要安装 CUDA Toolkit/cuDNN**，不需要管理员权限。
+- 仅对 `Realistic` / `RealisticHQ` 的 4x FP16 ONNX 启用；动画、2x/3x 暂走 NCNN。
+- 初始化/推理失败自动回退 NCNN；推理中途失败按既有规则回退源帧并最终判任务失败。
+- 用户默认不用选后端；高级用户可用 `DOMINO_NO_TRT=1` 关闭。
+- DirectML 暂不做；等 TensorRT/CUDA 路径稳定后再补兼容性。
+
+## 实测（RTX 4070 SUPER）
+
+### 直接推理：NCNN vs TensorRT-RTX FP16
+
+| 模型输入 → 目标 | NCNN | TensorRT-RTX | 加速 |
+|---|---:|---:|---:|
+| 480×270 → 1080p | 21.1ms | 4.7ms | 4.5x |
+| 640×360 → 2K | 45.4ms | 9.9ms | 4.6x |
+| 960×540 → 4K | 110.9ms | 25.1ms | 4.4x |
+
+- TensorRT-RTX 首次需要 JIT/engine 缓存；上面是稳定值。
+- 默认 compact 模型 4K 输入 960×540，输出 3840×2160；峰值上下文约 185MB。
+- batch=2 在 compact/1080p 上约 214ms/2 帧，**没有吞吐收益**；暂不启用离线 batch。
+
+### Player 端到端
+
+| 目标 | 优化前 NCNN | TensorRT-RTX |
+|---|---:|---:|
+| 1080p | 30.0 FPS | 29.6 FPS（源 30fps 上限） |
+| 2K | 21.7 FPS | 29.6 FPS（源 30fps 上限） |
+| 4K | 9.0 FPS | **22.65 FPS** |
+
+### 离线编码（2s 720p→1080，CRF18）
+
+| 模式 | NCNN | TensorRT-RTX |
+|---|---:|---:|
+| Fast | 1.42s | 1.81s |
+| Balanced | 6.62s | 3.18s |
+| FullSource | 11.26s | **5.11s** |
+
+Fast 由固定编码/初始化开销主导，TensorRT 没有优势；Balanced/FullSource 约 2x。
+
+### x4plus HQ（2s 720p→4K）
+
+- NCNN 直接推理 960×540→4K：约 1378ms/帧（60 帧约 83s，估算）。
+- TensorRT-RTX FullSource 离线：**31.9s**（约 2.6x）。
+- HQ 仍只在离线/任务中心使用；实时播放继续用标准模型。
+
+## 实现要点
+
+- `src/trt_sr.{h,cpp}`：TensorRT-RTX 后端，封装 engine 构建/缓存、CUDA driver API（`nvcuda.dll`）、输入 resize、FP16 推理、RGB 输出。
+- `Config`：`onnxBase`、`useTrt`、`srOnnx()`、`trtCacheDir()`；默认 `%APPDATA%/DominoPlayer/trt-rtx`。
+- `Player`：可用时走 TensorRT，失败/模型不匹配回退 NCNN；4K 档位不再依赖自动降档。
+- `encodeOffline`：同一 backend，保留原 infer/post 两段流水线；TensorRT 分支在 post 线程直接消费 RGB。
+- `TaskCenter`：ONNX/engine 缓存路径由桥层注入；任务续编沿用同一模型/质量档；后端按当前机器可用性优先 TensorRT、否则回退 NCNN（meta 不持久化 backend）。
+- `DOMINO_NO_TRT=1` 强制 NCNN，供驱动问题排查。
+- CMake：`libs/tensorrt-rtx/`（本地放置，git 忽略）自动启用；没有 SDK 时编译为空后端，功能回退 NCNN。
+- ONNX 资产：`assets/models/sr/onnx/`
+  - `realesr-general-x4v3-fp16.onnx`（2.4MB）
+  - `realesrgan-x4plus-fp16.onnx`（33.8MB）
+
+## 引擎缓存/启动
+
+- 动态 profile：compact `320×180 ~ 1920×1080`，HQ `320×180 ~ 960×720`。
+- 首次构建：compact 约 12s，HQ 约 20s；之后加载缓存约 5ms。
+- 缓存文件按 `模型-v1-最大宽x最大高.engine` 命名；构建临时文件后 rename，失败可重建。
+- 首次使用会做一次 960×540 warmup，避免第一帧 JIT 卡顿。
+
+## 待验证/风险
+
+- 竖屏/超宽比例超过 profile 上限时当前会回退源帧；后续可扩大 profile 或按实际 shape 建缓存。
+- 4K FullSource（1080p 源→7680×4320 中间帧）显存/内存峰值仍需实机确认。
+- TensorRT-RTX 引擎与 GPU/驱动/版本有兼容性要求；缓存失效需重建。
+- 分发包增加约 220MB；需接受 NVIDIA TensorRT-RTX 许可并附 notices。
+- 画质仍需真人脸部/发丝/文字/夜景 A/B；FP16 与 NCNN 输出已做基础目视检查。
+
+## 下一步
+
+1. 补 4K FullSource、竖屏、超宽、seek/暂停/自动降档的回归。
+2. 任务中心 HQ 端到端（建任务→续编→边播放）人工验收。
+3. 评估预构建 engine / 首次构建进度提示，避免 12–20s 黑场。
+4. 决定发布包是否默认带 TensorRT-RTX，或做成可选高性能组件。
+5. 之后再评估 DirectML/AMD/Intel 兼容性。

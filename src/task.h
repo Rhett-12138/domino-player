@@ -50,6 +50,8 @@ public:
   void setPreview(EncodePreviewFn fn, void* ud) { previewFn_ = fn; previewUd_ = ud; }
   // 超分模型目录（前端注入；空则用 Config::defaults()）
   void setModelBase(const std::string& m) { modelBase_ = m; }
+  // TensorRT ONNX 目录（前端注入；空则用 Config::defaults()）
+  void setOnnxBase(const std::string& m) { onnxBase_ = m; }
 
   std::vector<std::unique_ptr<Task>>& tasks() { return tasks_; }
   const std::string& dir() { return dir_; }
@@ -57,7 +59,9 @@ public:
 private:
   std::vector<std::unique_ptr<Task>> tasks_;  // atomic 成员使 Task 不可移动，用指针存储
   std::string dir_;
+  std::string dataRoot_;
   std::string modelBase_;   // 超分模型目录（前端注入）
+  std::string onnxBase_;    // TensorRT ONNX 目录（前端注入）
   EncodePreviewFn previewFn_ = nullptr;
   void* previewUd_ = nullptr;
 };

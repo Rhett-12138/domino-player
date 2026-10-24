@@ -1,5 +1,6 @@
 #include "encode.h"
 #include "config.h"
+#include "trt_sr.h"
 #include "log.h"
 #include "ffmpeg_raii.h"
 #include <cstdio>
@@ -86,19 +87,37 @@ bool encodeOffline(const char* srcPath, const char* outPath, int targetW, const 
 
   // ---- 超分 ----
   bool needSR = srcW < targetW;
+  const Config cfg = Config::defaults();
+  const int srScale = srModelScale(opts.model);
   SR sr;
+  TensorRtSR trt;
+  bool useTrt = false;
   if (needSR) {
-    const std::string base = opts.modelBase.empty() ? Config::defaults().modelBase : opts.modelBase;
-    const std::string param = joinModelPath(base, srModelParamName(opts.model));
-    const std::string bin = joinModelPath(base, srModelBinName(opts.model));
-    if (!sr.init(param.c_str(), bin.c_str())) {
-      fprintf(stderr, "sr init failed\n");
-      return false;
+    const std::string base = opts.modelBase.empty() ? cfg.modelBase : opts.modelBase;
+    const std::string onnxBase = opts.onnxBase.empty() ? cfg.onnxBase : opts.onnxBase;
+    const std::string trtCache = opts.trtCacheDir.empty() ? cfg.trtCacheDir() : opts.trtCacheDir;
+    if (opts.useTrt && cfg.useTrt && srModelSupportsTrt(opts.model)) {
+      const char* onnxName = srOnnxName(opts.model);
+      const std::string onnx = onnxName ? joinModelPath(onnxBase, onnxName) : std::string();
+      const int maxW = srModelIsHQ(opts.model) ? 960 : 1920;
+      const int maxH = srModelIsHQ(opts.model) ? 720 : 1080;
+      if (!onnx.empty() &&
+          trt.init(onnx.c_str(), trtCache.c_str(), srModelId(opts.model),
+                   srScale, maxW, maxH)) {
+        useTrt = true;
+      }
+    }
+    if (!useTrt) {
+      const std::string param = joinModelPath(base, srModelParamName(opts.model));
+      const std::string bin = joinModelPath(base, srModelBinName(opts.model));
+      if (!sr.init(param.c_str(), bin.c_str())) {
+        fprintf(stderr, "sr init failed\n");
+        return false;
+      }
     }
   }
   int outW = needSR ? targetW : srcW;
   int outH = needSR ? (int)(((size_t)srcH * targetW / srcW) & ~1) : srcH;
-  const int srScale = srModelScale(opts.model);
   int inW = needSR ? chooseSRInputWidth(srcW, targetW, opts.srInput, srScale) : srcW;
   // 高质量模型（x4plus / x4plus-anime）显存/中间特征更大：实测 1280 输入
   // 会失败，960（4x=3840）稳定；限制上限，避免整任务回退源帧。
@@ -315,6 +334,7 @@ bool encodeOffline(const char* srcPath, const char* outPath, int targetW, const 
     ncnn::Mat out;
     int srcW = 0;
     int srcH = 0;
+    int outW = 0;
     int srRet = 0;
     double ft = 0;
     uint64_t seq = 0;
@@ -523,6 +543,7 @@ bool encodeOffline(const char* srcPath, const char* outPath, int targetW, const 
       postJobs.clear();
       srResults.clear();
     }
+    trt.clear();
     sr.clear();
   };
 
@@ -548,7 +569,12 @@ bool encodeOffline(const char* srcPath, const char* outPath, int targetW, const 
         post.srcH = job.h;
         post.src = std::move(job.src);
         post.rgb = std::move(job.out);
-        post.srRet = sr.infer(post.src.data(), job.w, job.h, inW, post.out);
+        if (useTrt) {
+          post.srRet = trt.process(post.src.data(), job.w, job.h, inW, post.rgb);
+          post.outW = post.srRet;
+        } else {
+          post.srRet = sr.infer(post.src.data(), job.w, job.h, inW, post.out);
+        }
 
         {
           std::unique_lock<std::mutex> lk(srMu);
@@ -581,7 +607,11 @@ bool encodeOffline(const char* srcPath, const char* outPath, int targetW, const 
         res.seq = post.seq;
         res.src = std::move(post.src);
         res.srRet = post.srRet;
-        if (post.srRet > 0 && SR::convert(post.out, res.rgb)) {
+        if (useTrt && post.srRet > 0 && !post.rgb.empty()) {
+          res.rgb = std::move(post.rgb);
+          res.w = post.outW;
+          res.h = res.w > 0 ? (int)(res.rgb.size() / (size_t)res.w / 3) : 0;
+        } else if (!useTrt && post.srRet > 0 && SR::convert(post.out, res.rgb)) {
           res.w = post.out.w;
           res.h = post.out.h;
         } else {

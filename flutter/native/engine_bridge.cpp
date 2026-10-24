@@ -160,8 +160,21 @@ void* domino_create(const char* model_dir, const char* data_root) {
   if (!g_engine) g_engine = new EngineHandle();
   EngineHandle* e = g_engine;
   if (!e->player) {
+    e->cfg = Config::defaults();
     e->cfg.modelBase = model_dir ? model_dir : "";
     e->cfg.dataRoot = data_root ? data_root : "";
+    // Flutter 传入 .../assets/models/sr/ncnn；TensorRT ONNX 在同级 onnx 目录。
+    // 显式 DOMINO_ONNX_DIR 优先，便于调试和自定义模型包。
+    const char* envOnnx = getenv("DOMINO_ONNX_DIR");
+    if (!(envOnnx && *envOnnx) && !e->cfg.modelBase.empty()) {
+      std::string parent = e->cfg.modelBase;
+      while (!parent.empty() && (parent.back() == '/' || parent.back() == '\\')) parent.pop_back();
+      const size_t slash = parent.find_last_of("/\\");
+      if (slash != std::string::npos) {
+        parent.erase(slash);
+        e->cfg.onnxBase = joinModelPath(parent, "onnx");
+      }
+    }
     if (!e->out) {
       e->cpuOut = new EngineFrameOutput();
       e->out = e->cpuOut;
@@ -172,6 +185,7 @@ void* domino_create(const char* model_dir, const char* data_root) {
     e->tasks = std::make_unique<TaskCenter>();
     e->tasks->init(e->cfg.dataRoot);
     e->tasks->setModelBase(e->cfg.modelBase);
+    e->tasks->setOnnxBase(e->cfg.onnxBase);
   }
   return e;
 }

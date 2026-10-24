@@ -2,6 +2,7 @@
 #include "engine.h"
 #include "decode.h"
 #include "sr.h"
+#include "trt_sr.h"
 #include "audio_interface.h"
 #include "config.h"
 #include <atomic>
@@ -138,6 +139,8 @@ private:
   Config cfg_;
   MediaStream vid_, aud_;
   SR sr_;
+  TensorRtSR trt_;
+  std::atomic<bool> useTrt_{ false };
   std::unique_ptr<AudioSink> audio_;   // 音频输出（默认 WASAPI；可注入）
 
   std::atomic<bool> paused_{ false };
