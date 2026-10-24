@@ -8,10 +8,16 @@
 #include <dxgi.h>
 #include <wrl/client.h>
 
+extern "C" {
+#include <libswscale/swscale.h>
+}
+
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <deque>
 #include <mutex>
@@ -194,6 +200,9 @@ struct GpuFrameOutput::Impl {
 
   ComPtr<ID3D11Texture2D> input;
   ComPtr<ID3D11ShaderResourceView> inputSrv;
+  SwsContext* swsRgba = nullptr;
+  int swsW = 0, swsH = 0;
+  std::vector<uint8_t> rgbaBuf;
   ComPtr<ID3D11Texture2D> temp;
   ComPtr<ID3D11RenderTargetView> tempRtv;
   ComPtr<ID3D11ShaderResourceView> tempSrv;
@@ -287,6 +296,9 @@ void GpuFrameOutput::Impl::releaseInputTemp() {
   temp.Reset();
   inputSrv.Reset();
   input.Reset();
+  if (swsRgba) { sws_freeContext(swsRgba); swsRgba = nullptr; }
+  swsW = swsH = 0;
+  rgbaBuf.clear();
 }
 
 bool GpuFrameOutput::Impl::ensureSize(int width, int height) {
@@ -372,21 +384,44 @@ bool GpuFrameOutput::Impl::ensureSize(int width, int height) {
 }
 
 bool GpuFrameOutput::Impl::render(const uint8_t* rgb, int width, int height, int outIdx) {
+  const auto tStart = std::chrono::steady_clock::now();
   D3D11_MAPPED_SUBRESOURCE map = {};
   if (FAILED(ctx->Map(input.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &map))) return false;
-  for (int y = 0; y < height; y++) {
-    const uint8_t* s = rgb + (size_t)y * width * 3;
-    uint8_t* d = (uint8_t*)map.pData + (size_t)y * map.RowPitch;
-    for (int x = 0; x < width; x++) {
-      d[0] = s[0];
-      d[1] = s[1];
-      d[2] = s[2];
-      d[3] = 255;
-      s += 3;
-      d += 4;
+  if (!swsRgba || swsW != width || swsH != height) {
+    if (swsRgba) sws_freeContext(swsRgba);
+    swsRgba = sws_getContext(width, height, AV_PIX_FMT_RGB24,
+                             width, height, AV_PIX_FMT_RGBA,
+                             SWS_POINT, nullptr, nullptr, nullptr);
+    swsW = width;
+    swsH = height;
+    rgbaBuf.resize((size_t)width * height * 4);
+  }
+  if (swsRgba) {
+    const uint8_t* srcPlane[1] = { rgb };
+    int srcStride[1] = { width * 3 };
+    uint8_t* dstPlane[1] = { rgbaBuf.data() };
+    int dstStride[1] = { width * 4 };
+    sws_scale(swsRgba, srcPlane, srcStride, 0, height, dstPlane, dstStride);
+    for (int y = 0; y < height; y++) {
+      memcpy((uint8_t*)map.pData + (size_t)y * map.RowPitch,
+             rgbaBuf.data() + (size_t)y * width * 4, (size_t)width * 4);
+    }
+  } else {
+    for (int y = 0; y < height; y++) {
+      const uint8_t* s = rgb + (size_t)y * width * 3;
+      uint8_t* d = (uint8_t*)map.pData + (size_t)y * map.RowPitch;
+      for (int x = 0; x < width; x++) {
+        d[0] = s[0];
+        d[1] = s[1];
+        d[2] = s[2];
+        d[3] = 255;
+        s += 3;
+        d += 4;
+      }
     }
   }
   ctx->Unmap(input.Get(), 0);
+  const auto tUpload = std::chrono::steady_clock::now();
 
   int radius = bp.smooth > 0.001f ? (int)std::lround(bp.smooth * 4.0f) : 0;
   radius = std::max(0, std::min(4, radius));
@@ -443,6 +478,7 @@ bool GpuFrameOutput::Impl::render(const uint8_t* rgb, int width, int height, int
   ID3D11ShaderResourceView* srvs[2] = { inputSrv.Get(), radius > 0 ? tempSrv.Get() : inputSrv.Get() };
   ctx->PSSetShaderResources(0, 2, srvs);
   ctx->Draw(3, 0);
+  const auto tDraw = std::chrono::steady_clock::now();
 
   ctx->PSSetShaderResources(0, 2, nullSrvs);
   ctx->OMSetRenderTargets(0, nullptr, nullptr);
@@ -462,6 +498,18 @@ bool GpuFrameOutput::Impl::render(const uint8_t* rgb, int width, int height, int
     D3D11_QUERY_DESC qd = {};
     qd.Query = D3D11_QUERY_EVENT;
     device->CreateQuery(&qd, &syncQuery);
+  }
+  const char* profile = getenv("DOMINO_GPU_PROFILE");
+  if (profile && *profile && *profile != '0') {
+    static std::atomic<int> profileFrames{ 0 };
+    if (++profileFrames % 30 == 0) {
+      const auto tEnd = std::chrono::steady_clock::now();
+      const double up = std::chrono::duration<double, std::milli>(tUpload - tStart).count();
+      const double draw = std::chrono::duration<double, std::milli>(tDraw - tUpload).count();
+      const double wait = std::chrono::duration<double, std::milli>(tEnd - tDraw).count();
+      fprintf(stderr, "[gpu] %dx%d upload=%.2f draw=%.2f wait=%.2f total=%.2f\n",
+              width, height, up, draw, wait, up + draw + wait);
+    }
   }
   return true;
 }

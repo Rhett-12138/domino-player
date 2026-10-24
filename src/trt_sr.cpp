@@ -396,6 +396,7 @@ int TensorRtSR::process(const uint8_t* rgb, int w, int h, int inW,
                         std::vector<uint8_t>& outRgb) {
   if (!impl_ || !impl_->ready || !rgb || w <= 0 || h <= 0 || inW <= 1) return -1;
   Impl& m = *impl_;
+  const auto profileT0 = std::chrono::steady_clock::now();
   if (m.drv.ctxSet(m.cuCtx) != 0) return -1;
   // 动态 profile 覆盖常见横屏；竖屏/超宽/小目标按源比例双向夹取，
   // 避免 inH 超上限直接关闭 SR 或让离线任务判失败。
@@ -518,6 +519,13 @@ int TensorRtSR::process(const uint8_t* rgb, int w, int h, int inW,
       workers.emplace_back(convertRows, outH * i / threads, outH * (i + 1) / threads);
     }
     for (auto& t : workers) t.join();
+  }
+  if (const char* profile = getenv("DOMINO_TRT_PROFILE")) {
+    if (*profile && *profile != '0') {
+      const auto t1 = std::chrono::steady_clock::now();
+      fprintf(stderr, "[trt] %dx%d -> %dx%d %.2fms\n", inW, inH, outW, outH,
+              std::chrono::duration<double, std::milli>(t1 - profileT0).count());
+    }
   }
   return outW;
 }

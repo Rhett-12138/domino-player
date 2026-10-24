@@ -34,8 +34,9 @@
 | 4K | 9.0 FPS | **headless 27.6 FPS / Flutter App 23.8 FPS** |
 
 - 输出转换优化：FP16→RGB 使用 16-bit 字节 LUT + AVX2/F16C 快路径（CPU 不支持时自动回退标量），D2H 使用 pinned host memory；4K 从 22.65 提升到 27.6 FPS，离线 FullSource 从 5.11s 降到 4.34s。
-- headless 仍差约 1.2ms 到 33.3ms/30fps；Flutter App 4K 实测 **23.8 FPS**，说明 `GpuFrameOutput` 的 RGB→RGBA 上传和 D3D11/Flutter texture 呈现又增加约 4–7ms。**不能把 headless 27.6 当作 App 实际帧率。**
-- 下一步应优先优化 App 输出路径（GPU 纹理/零拷贝或更轻的呈现），而不是只继续压 TensorRT 推理。
+- headless 仍差约 1.2ms 到 33.3ms/30fps；Flutter App 4K 实测 **约 23.6 FPS**，说明 `GpuFrameOutput` 的 RGB→RGBA 上传和 D3D11/Flutter texture 呈现又增加开销。**不能把 headless 27.6 当作 App 实际帧率。**
+- 已将 App 的 RGB→RGBA 上传改用 libswscale：4K 上传从约 **14ms 降到约 3ms**；但 App 内 TensorRT `process` 实测约 **40.5ms**（headless 约 34.9ms，GPU/CPU 与 Flutter 呈现竞争），总帧率仍约 23.6 FPS。
+- 下一步应优先做 **推理/输出流水线重叠或 TensorRT→D3D11 共享纹理零拷贝**，只优化上传已不足以达到 30 FPS。
 
 ### 离线编码（2s 720p→1080，CRF18）
 
