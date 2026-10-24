@@ -1,7 +1,9 @@
 #include "sr.h"
-#include <cstdio>
+#include <algorithm>
 #include <cstdlib>
 #include <cstring>
+#include <thread>
+#include <vector>
 
 bool SR::init(const char* paramPath, const char* binPath) {
   net_.opt.use_vulkan_compute = true;
@@ -33,12 +35,47 @@ int SR::process(const uint8_t* rgb, int w, int h, int inW, std::vector<uint8_t>&
   if (ex.input(inName, in) != 0) return -1;
   ncnn::Mat out;
   if (ex.extract(outName, out) != 0) return -1;
-  for (int q = 0; q < out.c; q++) {
-    float* p = out.channel(q);
-    for (int i = 0; i < out.w * out.h; i++) p[i] *= 255.f;
+  if (out.c < 3) return -1;
+  const int outW = out.w;
+  const int outH = out.h;
+  outRgb.resize((size_t)outW * outH * 3);
+  auto convertRows = [&](int y0, int y1) {
+    const float* r = out.channel(0);
+    const float* g = out.channel(1);
+    const float* b = out.channel(2);
+    for (int y = y0; y < y1; y++) {
+      const float* rp = r + (size_t)y * outW;
+      const float* gp = g + (size_t)y * outW;
+      const float* bp = b + (size_t)y * outW;
+      uint8_t* dp = outRgb.data() + (size_t)y * outW * 3;
+      for (int x = 0; x < outW; x++) {
+        float vr = rp[x] * 255.f;
+        float vg = gp[x] * 255.f;
+        float vb = bp[x] * 255.f;
+        vr = (std::min)(255.f, (std::max)(0.f, vr));
+        vg = (std::min)(255.f, (std::max)(0.f, vg));
+        vb = (std::min)(255.f, (std::max)(0.f, vb));
+        dp[x * 3 + 0] = (uint8_t)vr;
+        dp[x * 3 + 1] = (uint8_t)vg;
+        dp[x * 3 + 2] = (uint8_t)vb;
+      }
+    }
+  };
+  int threads = (int)std::thread::hardware_concurrency();
+  threads = (std::max)(1, (std::min)(8, threads));
+  if ((size_t)outW * outH < 200000) threads = 1;
+  if (threads <= 1) {
+    convertRows(0, outH);
+  } else {
+    std::vector<std::thread> workers;
+    workers.reserve((size_t)threads);
+    for (int i = 0; i < threads; i++) {
+      int y0 = outH * i / threads;
+      int y1 = outH * (i + 1) / threads;
+      workers.emplace_back(convertRows, y0, y1);
+    }
+    for (auto& t : workers) t.join();
   }
-  outRgb.resize((size_t)out.w * out.h * 3);
-  out.to_pixels(outRgb.data(), ncnn::Mat::PIXEL_RGB);
   return out.w;
 }
 

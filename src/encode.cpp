@@ -223,6 +223,7 @@ bool encodeOffline(const char* srcPath, const char* outPath, int targetW, const 
   std::vector<uint8_t> rgb(srcBytes);
   std::vector<uint8_t> yuv((size_t)outW * outH * 3 / 2);
   std::vector<std::vector<uint8_t>> freeSrc;
+  std::vector<std::vector<uint8_t>> freeOut;
 
   long long count = 0;
   long long srFallbackCount = 0;
@@ -291,6 +292,7 @@ bool encodeOffline(const char* srcPath, const char* outPath, int targetW, const 
   // 运行。结果按 FIFO 取回，保证视频 PTS 顺序不变。
   struct SrJob {
     std::vector<uint8_t> src;
+    std::vector<uint8_t> out;
     int w;
     int h;
     double ft;
@@ -322,6 +324,15 @@ bool encodeOffline(const char* srcPath, const char* outPath, int targetW, const 
       return b;
     }
     return std::vector<uint8_t>(srcBytes);
+  };
+
+  auto acquireOut = [&] {
+    if (!freeOut.empty()) {
+      auto b = std::move(freeOut.back());
+      freeOut.pop_back();
+      return b;
+    }
+    return std::vector<uint8_t>();
   };
 
   auto encodeResult = [&](SrResult r) {
@@ -415,8 +426,9 @@ bool encodeOffline(const char* srcPath, const char* outPath, int targetW, const 
       printf("encoded %lld frames (%.1f fps)\n", count, count / el);
     }
 
-    // 源帧缓冲回到主线程池，避免每帧重新分配大块 RGB 内存
+    // 源帧/输出缓冲回到主线程池，避免每帧重新分配大块 RGB 内存
     if (r.src.size() == srcBytes) freeSrc.push_back(std::move(r.src));
+    if (!r.rgb.empty()) freeOut.push_back(std::move(r.rgb));
   };
 
   auto drainSr = [&] {
@@ -444,7 +456,7 @@ bool encodeOffline(const char* srcPath, const char* outPath, int targetW, const 
     int dl0[1] = { srcW * 3 };
     sws_scale(swsIn.p, frame->data, frame->linesize, 0, srcH, d0, dl0);
 
-    SrJob job{ std::move(rgb), srcW, srcH, ft };
+    SrJob job{ std::move(rgb), acquireOut(), srcW, srcH, ft };
     rgb = acquireSrc();
     for (;;) {
       drainSr();
@@ -504,6 +516,7 @@ bool encodeOffline(const char* srcPath, const char* outPath, int targetW, const 
         SrResult res;
         res.ft = job.ft;
         res.src = std::move(job.src);
+        res.rgb = std::move(job.out);
         const int sw = sr.process(res.src.data(), job.w, job.h, inW, res.rgb);
         res.srRet = sw;
         if (sw > 0) {
