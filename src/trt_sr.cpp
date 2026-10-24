@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -266,7 +267,6 @@ struct TensorRtSR::Impl {
     objs.config = objs.builder->createBuilderConfig();
     if (!objs.config) return false;
     objs.config->setMemoryPoolLimit(nvinfer1::MemoryPoolType::kWORKSPACE, (size_t)4 << 30);
-    objs.config->setBuilderOptimizationLevel(5);
 
     auto profile = objs.builder->createOptimizationProfile();
     if (!profile) return false;
@@ -382,7 +382,7 @@ bool TensorRtSR::init(const char* onnxPath, const char* cacheDir, const char* ca
   impl_->initLut();
   impl_->ready = true;
 
-  // 瑙﹀彂鐩爣 shape 鐨?JIT锛岄伩鍏嶇涓€甯у崱椤匡紱澶辫触涓嶅奖鍝嶅悗缁甯歌矾寰勩€?
+  // 触发目标 shape 的 JIT，避免第一帧卡顿；失败不影响后续正常路径。
   const int warmW = std::min(960, maxInW);
   const int warmH = std::min(540, maxInH);
   std::vector<uint8_t> dummy((size_t)warmW * warmH * 3, 0);
@@ -397,8 +397,8 @@ int TensorRtSR::process(const uint8_t* rgb, int w, int h, int inW,
   if (!impl_ || !impl_->ready || !rgb || w <= 0 || h <= 0 || inW <= 1) return -1;
   Impl& m = *impl_;
   if (m.drv.ctxSet(m.cuCtx) != 0) return -1;
-  // 鍔ㄦ€?profile 瑕嗙洊甯歌妯睆锛涚珫灞?瓒呭/灏忕洰鏍囨寜婧愭瘮渚嬪弻鍚戝す鍙栵紝
-  // 閬垮厤 inH 瓒呬笂闄愮洿鎺ュ叧闂?SR 鎴栬绂荤嚎浠诲姟鍒ゅけ璐ャ€?
+  // 动态 profile 覆盖常见横屏；竖屏/超宽/小目标按源比例双向夹取，
+  // 避免 inH 超上限直接关闭 SR 或让离线任务判失败。
   int fitW = std::min(inW, m.maxInW);
   int fitH = (int)(((int64_t)h * fitW / w) & ~1);
   if (fitH > m.maxInH) {
@@ -496,7 +496,6 @@ int TensorRtSR::process(const uint8_t* rgb, int w, int h, int inW,
       }
     }
   };
-  const bool avx2 = cpuHasAvx2F16c();
   auto convertRowsAvx2 = [&](int y0, int y1) {
     trtConvertHalfToRgbAvx2(planes[0] + (size_t)y0 * outW,
                             planes[1] + (size_t)y0 * outW,
@@ -506,7 +505,7 @@ int TensorRtSR::process(const uint8_t* rgb, int w, int h, int inW,
                             m.halfToByte);
   };
   std::function<void(int, int)> convertRows;
-  if (avx2) convertRows = convertRowsAvx2;
+  if (cpuHasAvx2F16c()) convertRows = convertRowsAvx2;
   else convertRows = convertRowsScalar;
   int threads = (int)std::thread::hardware_concurrency();
   threads = std::max(1, std::min(12, threads));
@@ -539,5 +538,4 @@ int TensorRtSR::process(const uint8_t*, int, int, int, std::vector<uint8_t>&) { 
 void TensorRtSR::clear() {}
 
 #endif
-
 
