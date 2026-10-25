@@ -63,6 +63,10 @@ DOMINO_EXPORT int    domino_frame_h(void* h);
 
 // 诊断 JSON（UTF-8）：GPU/adapter、backend、SR、cudart/TensorRT、Vulkan、fallback reason
 DOMINO_EXPORT int    domino_diagnostics(void* h, char* buf, int cap);
+// 实时后端策略：0=自动 1=兼容 2=性能；返回 1 表示当前立即生效，0 表示下次 open 生效
+DOMINO_EXPORT int    domino_set_backend_mode(void* h, int mode);
+DOMINO_EXPORT int    domino_get_backend_mode(void* h);
+DOMINO_EXPORT int    domino_backend_mode_pending(void* h);
 
 // ---- 任务中心（离线超分） ----
 // 创建任务，返回任务索引（-1 失败）；source=源视频，targetW=输出宽，desc=备注

@@ -392,6 +392,63 @@ TEST(PlayerIdempotentBeforeOpen) {
 }
 
 // 关闭后重新打开另一文件（前端"打开"按钮路径），时长/分辨率应切换
+TEST(PlayerBackendModeBeforeOpen) {
+  EngineFrameOutput out;
+  Player p(out);
+  Config cfg;
+  cfg.useTrt = true;
+  cfg.backendMode = BackendMode::Auto;
+  p.setConfig(cfg);
+  EXPECT_EQ((int)p.backendMode(), (int)BackendMode::Auto);
+  p.setBackendMode(BackendMode::Compat);
+  EXPECT_EQ((int)p.backendMode(), (int)BackendMode::Compat);
+  EXPECT_TRUE(p.backendModePending());
+  p.setBackendMode(BackendMode::Performance);
+  EXPECT_EQ((int)p.backendMode(), (int)BackendMode::Performance);
+  EXPECT_TRUE(p.backendModePending());
+}
+
+TEST(PlayerBackendModeAppliesOnOpen) {
+  EngineFrameOutput out;
+  Player p(out);
+  p.setAudioSink(std::make_unique<DummyAudioSink>());
+  Config cfg;
+  cfg.useTrt = true;
+  cfg.backendMode = BackendMode::Auto;
+  p.setConfig(cfg);
+  p.setBackendMode(BackendMode::Compat);
+  p.setNoSR(true);
+  EXPECT_TRUE(p.backendModePending());
+  EXPECT_TRUE(p.open(assetPath("test_av.mp4").c_str()));
+  EXPECT_FALSE(p.backendModePending());
+  EXPECT_EQ((int)p.activeBackendMode(), (int)BackendMode::Compat);
+  EXPECT_FALSE(p.usingTensorRt());
+  p.close();
+}
+
+TEST(PlayerPerformanceModeFailsWithoutTrtAssets) {
+  EngineFrameOutput out;
+  Player p(out);
+  p.setAudioSink(std::make_unique<DummyAudioSink>());
+  Config cfg;
+  cfg.useTrt = true;
+  cfg.backendMode = BackendMode::Performance;
+  cfg.onnxBase = "C:/domino_missing_onnx_for_test";
+  p.setConfig(cfg);
+  p.setNoSR(true);
+  EXPECT_TRUE(p.open(assetPath("test_av.mp4").c_str()));
+  p.setSRTarget(0, 1920);
+  p.setNoSR(false);
+  for (int i = 0; i < 120 && !p.srFailed(); i++) {
+    p.pump();
+    sleepMs(10);
+  }
+  EXPECT_TRUE(p.srFailed());
+  EXPECT_FALSE(p.usingTensorRt());
+  EXPECT_TRUE(p.gpuFallbackReason().find("TensorRT") != std::string::npos);
+  p.close();
+}
+
 TEST(PlayerReopen) {
   EngineFrameOutput out;
   Player p(out);

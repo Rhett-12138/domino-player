@@ -57,6 +57,7 @@ Flutter 测试（`cd flutter && flutter test`，纯 Dart，无需 DLL）：
 - `rdrag.ps1`：按住拖动
 - `capture.ps1 -Hwnd <句柄> -OutPng <文件>`：截取窗口
 - `pix.ps1 -Hwnd <句柄> -X <x> -Y <y>`：采样单像素颜色（用于判断界面状态）
+- `soak_4k.ps1 -Video <路径> -Minutes 60`：4K SR 长稳；循环播放、每 10 分钟 seek，CSV 记录工作集/私有内存/句柄/线程/GPU 总显存。长片路径必须通过参数传入，不写进仓库。
 
 典型回归流程：
 ```

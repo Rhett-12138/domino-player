@@ -34,11 +34,21 @@ public:
   // 必须在 open 前设置；播放中修改会与 VideoWorker 的模型路径读取竞争
   void setConfig(const Config& c) {
     cfg_ = c;
+    backendMode_.store((int)c.backendMode);
+    activeBackendMode_.store((int)c.backendMode);
     const char* noAuto = getenv("DOMINO_NO_AUTO_DEGRADE");
     if (noAuto && (strcmp(noAuto, "1") == 0 || strcmp(noAuto, "true") == 0)) {
       autoDegradeEnabled_.store(false);
     }
   }
+  // 模式可在播放中设置，但下一次 open 才重建后端；返回是否当前已生效。
+  bool setBackendMode(BackendMode m) {
+    backendMode_.store((int)m);
+    return !backendModePending();
+  }
+  BackendMode backendMode() const { return (BackendMode)backendMode_.load(); }
+  BackendMode activeBackendMode() const { return (BackendMode)activeBackendMode_.load(); }
+  bool backendModePending() const { return backendMode_.load() != activeBackendMode_.load(); }
   // setNoSR(true) 是“用户关闭”，会清空档位与自动状态；
   // setSRTarget(t>0) 会启用 SR 并重置自动降档（手动重选 = 重新尝试）。
   void setNoSR(bool b);
@@ -176,6 +186,8 @@ private:
   SR sr_;
   TensorRtSR trt_;
   std::atomic<bool> useTrt_{ false };
+  std::atomic<int> backendMode_{ 0 };        // 用户期望值
+  std::atomic<int> activeBackendMode_{ 0 };  // 当前 open 已应用的值
   std::unique_ptr<AudioSink> audio_;   // 音频输出（默认 WASAPI；可注入）
 
   std::atomic<bool> paused_{ false };

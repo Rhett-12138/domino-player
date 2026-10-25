@@ -24,9 +24,27 @@ class FakeEngine implements EngineApi {
   final List<_FakeTask> tasks = [];
   String diagJson =
       '{"version":"0.2.4","backend":"tensorrt","output":"d3d11","zeroCopy":{"active":true}}';
+  int backendModeState = 0;
+  bool backendModeApplied = true;
+  bool backendModePendingState = false;
+  int backendModeCalls = 0;
 
   @override
   String diagnostics() => diagJson;
+
+  @override
+  int get backendMode => backendModeState;
+
+  @override
+  bool get backendModePending => backendModePendingState;
+
+  @override
+  bool setBackendMode(int mode) {
+    backendModeCalls++;
+    backendModeState = mode;
+    backendModePendingState = !backendModeApplied;
+    return backendModeApplied;
+  }
 
   @override
   String? openDialog(String currentPath) => dialogResult;
@@ -519,6 +537,45 @@ void main() {
     await tester.pump();
     expect(find.textContaining('tensorrt'), findsOneWidget);
     expect(find.textContaining('d3d11'), findsOneWidget);
+    await _dispose(tester);
+  });
+
+  testWidgets('播放页：诊断页切换后端策略', (WidgetTester tester) async {
+    final engine = FakeEngine();
+    await tester.pumpWidget(MaterialApp(home: PlayerScreen(engine: engine)));
+    await tester.pump();
+
+    await tester.tap(find.byIcon(Icons.tune));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+    await tester.tap(find.text('诊断'));
+    await tester.pump();
+    await tester.tap(find.byType(DropdownButton<int>));
+    await tester.pump(const Duration(milliseconds: 250));
+    await tester.tap(find.text('兼容').last);
+    await tester.pump(const Duration(milliseconds: 250));
+    expect(engine.backendModeCalls, 1);
+    expect(engine.backendModeState, 1);
+    await _dispose(tester);
+  });
+
+  testWidgets('播放页：后端策略待生效提示', (WidgetTester tester) async {
+    final engine = FakeEngine()..backendModeApplied = false;
+    await tester.pumpWidget(MaterialApp(home: PlayerScreen(engine: engine)));
+    await tester.pump();
+
+    await tester.tap(find.byIcon(Icons.tune));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 250));
+    await tester.tap(find.text('诊断'));
+    await tester.pump();
+    await tester.tap(find.byType(DropdownButton<int>));
+    await tester.pump(const Duration(milliseconds: 250));
+    await tester.tap(find.text('兼容').last);
+    await tester.pump(const Duration(milliseconds: 250));
+    expect(engine.backendModeCalls, 1);
+    expect(find.text('待生效'), findsOneWidget);
+    expect(find.textContaining('下次打开视频'), findsOneWidget);
     await _dispose(tester);
   });
 

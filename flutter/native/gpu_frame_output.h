@@ -18,10 +18,14 @@ public:
 
   // 诊断信息（D3D11 adapter / feature level）
   std::string adapterName() const;
+  std::string adapterDriverVersion() const;
+  std::string adapterMode() const;
   int adapterVendorId() const;
   int adapterDeviceId() const;
   long long dedicatedVideoMemory() const;
   int featureLevel() const;
+  bool h264HwDecode() const;
+  std::string h264HwDecodeReason() const;
 
   void presentFrame(const uint8_t* rgb, int w, int h) override;
   void beginPresent() override {}

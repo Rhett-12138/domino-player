@@ -35,7 +35,13 @@ std::string diagnosticsToJson(const DiagnosticsInfo& i) {
   s += jsonEscape(i.version);
   s += "\",\"backend\":\"";
   s += jsonEscape(i.backend);
-  s += "\",\"output\":\"";
+  s += "\",\"mode\":\"";
+  s += jsonEscape(i.mode);
+  s += "\",\"modeActive\":\"";
+  s += jsonEscape(i.modeActive);
+  s += "\",\"modePending\":";
+  s += i.modePending ? "true" : "false";
+  s += ",\"output\":\"";
   s += jsonEscape(i.output);
   s += "\",\"sr\":{";
   appendBool(s, "inited", i.srInited);
@@ -52,10 +58,19 @@ std::string diagnosticsToJson(const DiagnosticsInfo& i) {
   s += jsonEscape(i.fallbackReason);
   s += "\"},\"gpu\":{\"adapter\":\"";
   s += jsonEscape(i.adapter);
+  s += "\",\"driver\":\"";
+  s += jsonEscape(i.driverVersion);
+  s += "\",\"mode\":\"";
+  s += jsonEscape(i.adapterMode);
   snprintf(num, sizeof(num), "\",\"vendorId\":%d,\"deviceId\":%d,\"memoryMB\":%lld,\"featureLevel\":\"%s\"},",
            i.vendorId, i.deviceId, i.memoryMB, jsonEscape(i.featureLevel).c_str());
   s += num;
-  s += "\"cuda\":{";
+  s += "\"decode\":{";
+  appendBool(s, "h264Hw", i.h264HwDecode);
+  appendBool(s, "inUse", i.h264InUse);
+  s += "\"reason\":\"";
+  s += jsonEscape(i.h264Reason);
+  s += "\"},\"cuda\":{";
   appendBool(s, "cudart", i.cudart);
   appendBool(s, "tensorrt", i.tensorrt, false);
   s += "},\"vulkan\":{";

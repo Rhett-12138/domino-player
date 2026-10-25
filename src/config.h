@@ -2,6 +2,28 @@
 #include <cstdint>
 #include <string>
 
+// 实时播放后端策略：自动尝试 TensorRT，兼容档直接 NCNN，性能档 TensorRT 失败即报错。
+enum class BackendMode {
+  Auto = 0,
+  Compat = 1,
+  Performance = 2,
+};
+
+inline const char* backendModeName(BackendMode m) {
+  switch (m) {
+    case BackendMode::Compat: return "compat";
+    case BackendMode::Performance: return "performance";
+    case BackendMode::Auto:
+    default: return "auto";
+  }
+}
+
+inline BackendMode backendModeFromName(const std::string& s) {
+  if (s == "compat" || s == "compatible") return BackendMode::Compat;
+  if (s == "performance" || s == "perf") return BackendMode::Performance;
+  return BackendMode::Auto;
+}
+
 // 离线任务可选的模型库（实时播放仍用通用模型）
 enum class SRModel {
   Realistic = 0,     // 真人/实拍，标准 x4
@@ -118,6 +140,7 @@ struct Config {
   std::string onnxBase;    // TensorRT 可选 ONNX 模型目录
   std::string dataRoot;    // 任务数据根目录（其下建 sr-tasks/）
   bool useTrt = true;      // 可用时优先 TensorRT-RTX，失败自动回退 NCNN
+  BackendMode backendMode = BackendMode::Auto;  // 实时播放后端策略
 
   std::string srParam() const { return joinModelPath(modelBase, srModelParamName(SRModel::Realistic)); }
   std::string srBin() const { return joinModelPath(modelBase, srModelBinName(SRModel::Realistic)); }

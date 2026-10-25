@@ -179,12 +179,19 @@ ctest --test-dir build -C Release --output-on-failure      # ~5s，应 0 failed
 
 播放页右下角 `选项 → 诊断` 可查看当前运行路径：
 
-- D3D11 adapter / VendorId / 显存 / Feature Level
+- D3D11 adapter / 驱动版本 / VendorId / 显存 / Feature Level
 - TensorRT / NCNN 实际 backend
 - cudart、TensorRT、Vulkan 可用性
+- D3D11VA H.264 能力（当前解码仍走软件路径）
 - SR 目标、零拷贝是否 active、GPU fatal、降级原因
 
-诊断 JSON 可一键复制，用于定位“为什么只有 20 FPS”“为什么回退 CPU”等问题。
+诊断页可直接切换后端策略：
+
+- **自动**：实时播放优先 TensorRT/零拷贝，失败回退 NCNN/CPU
+- **兼容**：实时播放跳过 TensorRT，直接 NCNN
+- **性能**：实时播放要求 TensorRT，失败时明确报 SR 失败而不是静默降级
+
+模式切换在下一次打开视频时重建实时后端（离线任务仍按任务设置选择 TensorRT/NCNN）。环境变量 `DOMINO_BACKEND=auto|compat|performance` 可设置启动默认值。诊断 JSON 可一键复制，用于定位“为什么只有 20 FPS”“为什么回退 CPU”等问题。长稳脚本见 `tests/gui/soak_4k.ps1`。
 
 ## 已知限制
 

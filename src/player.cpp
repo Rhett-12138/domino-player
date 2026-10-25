@@ -112,7 +112,9 @@ void Player::ensureSR() {
     if ((useTrt_.load() && trt_.ready()) || (!useTrt_.load() && sr_.ready())) return;
     srInited_.store(false);
   }
-  if (cfg_.useTrt) {
+  const BackendMode mode = (BackendMode)activeBackendMode_.load();
+  const bool allowTrt = cfg_.useTrt && mode != BackendMode::Compat;
+  if (allowTrt) {
     const SRModel model = SRModel::Realistic;
     const std::string onnx = cfg_.srOnnx(model);
     if (!onnx.empty() &&
@@ -122,8 +124,26 @@ void Player::ensureSR() {
       return;
     }
     trt_.clear();
+    if (mode == BackendMode::Performance) {
+      useTrt_.store(false);
+      srFailed_.store(true);
+      setGpuFallbackReason("TensorRT unavailable in performance mode");
+      fprintf(stderr, "sr init failed: performance mode requires TensorRT\n");
+      return;
+    }
+    setGpuFallbackReason("TensorRT unavailable, NCNN fallback");
+  }
+  if (mode == BackendMode::Performance && !cfg_.useTrt) {
+    useTrt_.store(false);
+    srFailed_.store(true);
+    setGpuFallbackReason("TensorRT disabled (DOMINO_NO_TRT)");
+    fprintf(stderr, "sr init failed: performance mode disabled by DOMINO_NO_TRT\n");
+    return;
   }
   useTrt_.store(false);
+  if (mode == BackendMode::Compat) {
+    setGpuFallbackReason("compat mode (NCNN, zero-copy off)");
+  }
   if (sr_.init(cfg_.srParam().c_str(), cfg_.srBin().c_str())) {
     srInited_.store(true);
   } else {
@@ -226,6 +246,15 @@ void Player::maybeAutoDegrade(double now) {
 bool Player::open(const std::string& path) {
   stopVideo();
   stopAudio();
+  const int desiredMode = backendMode_.load();
+  if (desiredMode != activeBackendMode_.load()) {
+    trt_.clear();
+    sr_.clear();
+    useTrt_.store(false);
+    srInited_.store(false);
+    srFailed_.store(false);
+    activeBackendMode_.store(desiredMode);
+  }
   vid_.close();
   aud_.close();
   currentPath_.clear();

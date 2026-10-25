@@ -21,6 +21,9 @@ Config Config::defaults() {
   c.useTrt = !(noTrt && (strcmp(noTrt, "1") == 0 ||
                          strcmp(noTrt, "true") == 0 ||
                          strcmp(noTrt, "TRUE") == 0));
+  const char* backend = getenv("DOMINO_BACKEND");
+  c.backendMode = backendModeFromName(backend ? backend : "");
+  if (!c.useTrt) c.backendMode = BackendMode::Compat;
   const char* a = getenv("APPDATA");
   c.dataRoot = std::string(a ? a : ".") + "/DominoPlayer";
   return c;

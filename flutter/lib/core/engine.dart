@@ -69,8 +69,11 @@ abstract class EngineApi {
   int get previewH;
   Uint8List previewBytes(int idx);
 
-  // ---- 诊断 ----
+  // ---- 诊断 / 后端策略 ----
   String diagnostics() => '{}';
+  int get backendMode => 0;
+  bool get backendModePending => false;
+  bool setBackendMode(int mode) => false;
 }
 
 /// domino_engine.dll 的 Dart FFI 绑定（见 flutter/native/engine_bridge.h）
@@ -224,6 +227,15 @@ class DominoEngine implements EngineApi {
     return s;
   }
 
+  @override
+  int get backendMode => _backendMode(_h);
+
+  @override
+  bool get backendModePending => _backendModePending(_h) == 1;
+
+  @override
+  bool setBackendMode(int mode) => _setBackendMode(_h, mode) == 1;
+
   // ---- FFI 声明（字段用 Dart 类型；lookupFunction<原生签名, Dart 签名>） ----
   static final Pointer<Void> Function(Pointer<Utf8>, Pointer<Utf8>) _create = _lib
       .lookupFunction<Pointer<Void> Function(Pointer<Utf8>, Pointer<Utf8>),
@@ -285,6 +297,15 @@ class DominoEngine implements EngineApi {
   static final int Function(Pointer<Void>, Pointer<Uint8>, int) _diagnostics = _lib
       .lookupFunction<Int32 Function(Pointer<Void>, Pointer<Uint8>, Int32),
           int Function(Pointer<Void>, Pointer<Uint8>, int)>('domino_diagnostics');
+  static final int Function(Pointer<Void>, int) _setBackendMode = _lib
+      .lookupFunction<Int32 Function(Pointer<Void>, Int32),
+          int Function(Pointer<Void>, int)>('domino_set_backend_mode');
+  static final int Function(Pointer<Void>) _backendMode = _lib
+      .lookupFunction<Int32 Function(Pointer<Void>),
+          int Function(Pointer<Void>)>('domino_get_backend_mode');
+  static final int Function(Pointer<Void>) _backendModePending = _lib
+      .lookupFunction<Int32 Function(Pointer<Void>),
+          int Function(Pointer<Void>)>('domino_backend_mode_pending');
 
   // ---- 任务 FFI ----
   static final int Function(Pointer<Void>, Pointer<Utf8>, int, int, int, Pointer<Utf8>) _taskCreate = _lib

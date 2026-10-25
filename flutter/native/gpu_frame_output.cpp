@@ -238,10 +238,15 @@ struct GpuFrameOutput::Impl {
   uint64_t gen = 0;
   bool ok = false;
   std::string adapterName;
+  std::string driverVersion;
+  std::string adapterMode = "auto";
   int adapterVendor = 0;
   int adapterDevice = 0;
   long long adapterMemory = 0;
   int featureLevelValue = 0;
+  bool h264HwDecode = false;
+  std::string h264Reason = "D3D11 video device unavailable";
+  bool videoSupportFallback = false;
 
   EngineBeautyParams bp;
   std::atomic<bool> newFrame{ false };
@@ -275,7 +280,8 @@ bool GpuFrameOutput::Impl::compile(const char* entry, const char* target, ComPtr
 }
 
 bool GpuFrameOutput::Impl::init() {
-  UINT flags = D3D11_CREATE_DEVICE_BGRA_SUPPORT;
+  // VIDEO_SUPPORT 仅用于探测 D3D11VA/H.264 能力，不改变现有 shader 输出路径。
+  UINT flags = D3D11_CREATE_DEVICE_BGRA_SUPPORT | D3D11_CREATE_DEVICE_VIDEO_SUPPORT;
   D3D_FEATURE_LEVEL levels[] = { D3D_FEATURE_LEVEL_11_0, D3D_FEATURE_LEVEL_10_1, D3D_FEATURE_LEVEL_10_0 };
   D3D_FEATURE_LEVEL got = D3D_FEATURE_LEVEL_11_0;
   // zero-copy 需要 D3D11 设备与 TensorRT 在同一块 NVIDIA GPU 上；默认 adapter
@@ -284,8 +290,8 @@ bool GpuFrameOutput::Impl::init() {
   // 退回默认 adapter（零拷贝自动降级为 CPU，但显示链路保持原生）。
   ComPtr<IDXGIAdapter1> nvAdapter;
   ComPtr<IDXGIFactory1> factory;
-  const char* adapterMode = getenv("DOMINO_D3D_ADAPTER");
-  const bool preferDefault = adapterMode && strcmp(adapterMode, "default") == 0;
+  const char* adapterEnv = getenv("DOMINO_D3D_ADAPTER");
+  const bool preferDefault = adapterEnv && strcmp(adapterEnv, "default") == 0;
   if (!preferDefault && SUCCEEDED(CreateDXGIFactory1(IID_PPV_ARGS(&factory)))) {
     for (UINT i = 0;; i++) {
       ComPtr<IDXGIAdapter1> ad;
@@ -297,9 +303,22 @@ bool GpuFrameOutput::Impl::init() {
       }
     }
   }
-  HRESULT hr = D3D11CreateDevice(
-      nvAdapter.Get(), nvAdapter ? D3D_DRIVER_TYPE_UNKNOWN : D3D_DRIVER_TYPE_HARDWARE,
-      nullptr, flags, levels, 3, D3D11_SDK_VERSION, &device, &got, &ctx);
+  adapterMode = preferDefault ? "default" : (nvAdapter ? "nvidia" : "auto");
+  const auto createDevice = [&]() {
+    return D3D11CreateDevice(
+        nvAdapter.Get(), nvAdapter ? D3D_DRIVER_TYPE_UNKNOWN : D3D_DRIVER_TYPE_HARDWARE,
+        nullptr, flags, levels, 3, D3D11_SDK_VERSION, &device, &got, &ctx);
+  };
+  HRESULT hr = createDevice();
+  if (FAILED(hr)) {
+    // 老系统/驱动不支持 VIDEO_SUPPORT 时不能影响播放，退回纯显示设备。
+    logx::warn("gpu beauty: D3D11 video device failed 0x%08x, retry without video", (unsigned)hr);
+    videoSupportFallback = true;
+    device.Reset();
+    ctx.Reset();
+    flags = D3D11_CREATE_DEVICE_BGRA_SUPPORT;
+    hr = createDevice();
+  }
   if (FAILED(hr) || !device || !ctx) {
     logx::warn("gpu beauty: D3D11CreateDevice failed 0x%08x", (unsigned)hr);
     return false;
@@ -324,6 +343,37 @@ bool GpuFrameOutput::Impl::init() {
         adapterName = std::move(name);
       }
     }
+    // UMD 版本即 Windows 显示驱动版本（NVIDIA: 31.0.15.5222 形式）。
+    LARGE_INTEGER umd = {};
+    if (SUCCEEDED(dxgiAdapter->CheckInterfaceSupport(__uuidof(IDXGIDevice), &umd))) {
+      const unsigned long long v = (unsigned long long)umd.QuadPart;
+      char buf[64] = {};
+      snprintf(buf, sizeof(buf), "%u.%u.%u.%u",
+               (unsigned)((v >> 48) & 0xFFFF), (unsigned)((v >> 32) & 0xFFFF),
+               (unsigned)((v >> 16) & 0xFFFF), (unsigned)(v & 0xFFFF));
+      driverVersion = buf;
+    }
+  }
+
+  ComPtr<ID3D11VideoDevice> videoDevice;
+  if (SUCCEEDED(device.As(&videoDevice))) {
+    const UINT count = videoDevice->GetVideoDecoderProfileCount();
+    for (UINT i = 0; i < count; i++) {
+      GUID profile = {};
+      if (FAILED(videoDevice->GetVideoDecoderProfile(i, &profile))) continue;
+      if (IsEqualGUID(profile, D3D11_DECODER_PROFILE_H264_VLD_NOFGT) ||
+          IsEqualGUID(profile, D3D11_DECODER_PROFILE_H264_VLD_WITHFMOASO_NOFGT) ||
+          IsEqualGUID(profile, D3D11_DECODER_PROFILE_H264_VLD_MULTIVIEW_NOFGT)) {
+        h264HwDecode = true;
+        h264Reason.clear();
+        break;
+      }
+    }
+    if (!h264HwDecode) h264Reason = "D3D11VA H.264 profile not reported";
+  } else {
+    h264Reason = videoSupportFallback
+        ? "device created without D3D11 VIDEO_SUPPORT"
+        : "ID3D11VideoDevice unavailable";
   }
 
   ComPtr<ID3DBlob> vsBlob, psBlurBlob, psFinalBlob, psGpuBlob;
@@ -701,10 +751,14 @@ GpuFrameOutput::~GpuFrameOutput() = default;
 bool GpuFrameOutput::ok() const { return impl_ && impl_->ok; }
 
 std::string GpuFrameOutput::adapterName() const { return impl_ ? impl_->adapterName : std::string(); }
+std::string GpuFrameOutput::adapterDriverVersion() const { return impl_ ? impl_->driverVersion : std::string(); }
+std::string GpuFrameOutput::adapterMode() const { return impl_ ? impl_->adapterMode : std::string(); }
 int GpuFrameOutput::adapterVendorId() const { return impl_ ? impl_->adapterVendor : 0; }
 int GpuFrameOutput::adapterDeviceId() const { return impl_ ? impl_->adapterDevice : 0; }
 long long GpuFrameOutput::dedicatedVideoMemory() const { return impl_ ? impl_->adapterMemory : 0; }
 int GpuFrameOutput::featureLevel() const { return impl_ ? impl_->featureLevelValue : 0; }
+bool GpuFrameOutput::h264HwDecode() const { return impl_ ? impl_->h264HwDecode : false; }
+std::string GpuFrameOutput::h264HwDecodeReason() const { return impl_ ? impl_->h264Reason : std::string(); }
 
 void GpuFrameOutput::setBeautyParams(const EngineBeautyParams& bp) {
   if (!impl_) return;

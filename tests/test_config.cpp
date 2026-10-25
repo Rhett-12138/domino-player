@@ -27,6 +27,16 @@ TEST(ConfigPathInjection) {
   EXPECT_STREQ(joinModelPath("", "x.bin").c_str(), "x.bin");
 }
 
+TEST(ConfigBackendModeNames) {
+  EXPECT_STREQ(backendModeName(BackendMode::Auto), "auto");
+  EXPECT_STREQ(backendModeName(BackendMode::Compat), "compat");
+  EXPECT_STREQ(backendModeName(BackendMode::Performance), "performance");
+  EXPECT_EQ((int)backendModeFromName(""), (int)BackendMode::Auto);
+  EXPECT_EQ((int)backendModeFromName("auto"), (int)BackendMode::Auto);
+  EXPECT_EQ((int)backendModeFromName("compat"), (int)BackendMode::Compat);
+  EXPECT_EQ((int)backendModeFromName("performance"), (int)BackendMode::Performance);
+}
+
 TEST(ConfigTrtModels) {
   Config c;
   c.onnxBase = "C:/onnx";

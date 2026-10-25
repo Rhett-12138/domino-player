@@ -216,6 +216,8 @@ class PlayerScreenState extends State<PlayerScreen> with SingleTickerProviderSta
   bool _sidePanelOpen = false;
   int _sideTab = 0; // 0=美化 1=播放历史 2=诊断
   String _diagText = '尚未读取诊断信息';
+  int _backendMode = 0; // 0=自动 1=兼容 2=性能
+  bool _backendModePending = false;
   double _resumeAfterOpen = 0;
 
   String _currentPath = ''; // 当前视频路径（不常显，仅作对话框初始目录与文件名）
@@ -253,6 +255,14 @@ class PlayerScreenState extends State<PlayerScreen> with SingleTickerProviderSta
     super.initState();
     // 不自动打开视频：由用户点「打开」选择文件
     // 用 Ticker 在每次 vsync 驱动引擎（呈现对齐刷新，比 16ms Timer 平滑）
+    try {
+      _backendMode = widget.engine.backendMode;
+      _backendModePending = widget.engine.backendModePending;
+    } catch (_) {
+      // 旧 DLL 缺后端模式符号时保持自动档，不影响播放页构建。
+      _backendMode = 0;
+      _backendModePending = false;
+    }
     _history = PlayHistory(widget.historyPath);
     _history.load().then((_) {
       if (mounted) setState(() {});
@@ -526,6 +536,10 @@ class PlayerScreenState extends State<PlayerScreen> with SingleTickerProviderSta
     final resume = _resumeAfterOpen;
     _resumeAfterOpen = 0;
     if (ok && resume > 0.05) e.seek(resume);
+    try {
+      _backendMode = e.backendMode;
+      _backendModePending = e.backendModePending;
+    } catch (_) {}
     setState(() {
       _opening = false;
       _hasVideo = ok;
@@ -728,7 +742,17 @@ class PlayerScreenState extends State<PlayerScreen> with SingleTickerProviderSta
     } catch (_) {
       text = e.diagnostics();
     }
-    setState(() => _diagText = text);
+    var mode = _backendMode;
+    var pending = _backendModePending;
+    try {
+      mode = e.backendMode;
+      pending = e.backendModePending;
+    } catch (_) {}
+    setState(() {
+      _diagText = text;
+      _backendMode = mode;
+      _backendModePending = pending;
+    });
   }
 
   Widget _buildDiagnosticsPanel(EngineApi e) {
@@ -756,6 +780,54 @@ class PlayerScreenState extends State<PlayerScreen> with SingleTickerProviderSta
                   );
                 },
               ),
+            ],
+          ),
+        ),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(12, 0, 8, 6),
+          child: Row(
+            children: [
+              const Text('后端策略',
+                  style: TextStyle(fontSize: 12, color: Colors.white70)),
+              const SizedBox(width: 12),
+              DropdownButtonHideUnderline(
+                child: DropdownButton<int>(
+                  value: _backendMode,
+                  dropdownColor: const Color(0xFF262936),
+                  style: const TextStyle(fontSize: 12, color: Colors.white),
+                  items: const [
+                    DropdownMenuItem(value: 0, child: Text('自动')),
+                    DropdownMenuItem(value: 1, child: Text('兼容')),
+                    DropdownMenuItem(value: 2, child: Text('性能')),
+                  ],
+                  onChanged: (v) {
+                    if (v == null) return;
+                    bool applied;
+                    try {
+                      applied = e.setBackendMode(v);
+                    } catch (_) {
+                      applied = false;
+                    }
+                    setState(() {
+                      _backendMode = v;
+                      _backendModePending = !applied;
+                    });
+                    _refreshDiagnostics(e);
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(
+                        content: Text(applied ? '后端策略已切换' : '后端策略将在下次打开视频时生效'),
+                        duration: const Duration(seconds: 2),
+                      ),
+                    );
+                  },
+                ),
+              ),
+              if (_backendModePending)
+                const Padding(
+                  padding: EdgeInsets.only(left: 8),
+                  child: Text('待生效',
+                      style: TextStyle(fontSize: 11, color: Colors.orangeAccent)),
+                ),
             ],
           ),
         ),

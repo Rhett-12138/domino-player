@@ -50,6 +50,7 @@ target_link_libraries(domino_engine PRIVATE
   shell32.lib
   d3d11.lib
   dxgi.lib
+  dxguid.lib
   d3dcompiler.lib
 )
 

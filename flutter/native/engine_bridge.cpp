@@ -389,12 +389,20 @@ int domino_diagnostics(void* h, char* buf, int cap) {
   di.backend = e->player->usingTensorRt()
       ? "tensorrt"
       : (e->player->srReady() ? "ncnn" : "off");
+  di.mode = backendModeName(e->player->backendMode());
+  di.modeActive = backendModeName(e->player->activeBackendMode());
+  di.modePending = e->player->backendModePending();
   di.output = gpu ? "d3d11" : "cpu";
   di.adapter = gpu ? e->gpuOut->adapterName() : std::string();
+  di.driverVersion = gpu ? e->gpuOut->adapterDriverVersion() : std::string();
+  di.adapterMode = gpu ? e->gpuOut->adapterMode() : std::string();
   di.vendorId = gpu ? e->gpuOut->adapterVendorId() : 0;
   di.deviceId = gpu ? e->gpuOut->adapterDeviceId() : 0;
   di.memoryMB = gpu ? e->gpuOut->dedicatedVideoMemory() / (1024 * 1024) : 0;
   di.featureLevel = featureLevelName(gpu ? e->gpuOut->featureLevel() : 0);
+  di.h264HwDecode = gpu && e->gpuOut->h264HwDecode();
+  di.h264InUse = false;   // 当前解码仍是 FFmpeg 软件路径
+  di.h264Reason = gpu ? e->gpuOut->h264HwDecodeReason() : "GPU output unavailable";
   di.srInited = e->player->srReady();
   di.srFailed = e->player->srFailed();
   di.beauty = e->player->beautyActive();
@@ -409,6 +417,26 @@ int domino_diagnostics(void* h, char* buf, int cap) {
   di.fps = e->player->fpsDisplay();
   CopyOut(diagnosticsToJson(di), buf, cap);
   return 1;
+}
+
+int domino_set_backend_mode(void* h, int mode) {
+  EngineHandle* e = (EngineHandle*)h;
+  if (!e || !e->player) return 0;
+  if (mode < (int)BackendMode::Auto || mode > (int)BackendMode::Performance) return 0;
+  const BackendMode m = (BackendMode)mode;
+  e->cfg.backendMode = m;
+  e->player->setBackendMode(m);
+  return e->player->backendModePending() ? 0 : 1;
+}
+
+int domino_get_backend_mode(void* h) {
+  EngineHandle* e = (EngineHandle*)h;
+  return e && e->player ? (int)e->player->backendMode() : (int)BackendMode::Auto;
+}
+
+int domino_backend_mode_pending(void* h) {
+  EngineHandle* e = (EngineHandle*)h;
+  return e && e->player && e->player->backendModePending() ? 1 : 0;
 }
 
 // ---- 任务中心 ----
