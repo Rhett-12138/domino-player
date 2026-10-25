@@ -89,6 +89,8 @@
 
 ## 下载（Windows 预编译包）
 
+> 当前仓库的 `v0.3.0` M1 安装包/绿色包是本地构建产物，**尚未发布到 Releases**；已公开发布的是 `v0.2.4` 绿色包。发布前请以 Releases 页面为准。
+
 无需自行编译：到 [**Releases**](https://github.com/Rhett-12138/domino-player/releases) 下载。
 
 - **安装包**：`domino-player-vX.Y.Z-win64-setup.exe`。按当前用户安装，不需要管理员权限；安装器会检测 VC++ Runtime。
