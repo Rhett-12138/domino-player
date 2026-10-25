@@ -10,10 +10,12 @@
 #include <mutex>
 #include <vector>
 #include <memory>
+#include <cstdio>
 #include <cstring>
 #include <string>
 
 #include "../../src/config.h"
+#include "../../src/diagnostics.h"
 #include "../../src/log.h"
 #include "../../src/player.h"
 #include "../../src/audio.h"
@@ -359,6 +361,54 @@ int domino_frame_h(void* h) {
     if (hgt > 0) return hgt;
   }
   return e->player ? e->player->srcH() : 0;
+}
+
+static void CopyOut(const std::string& s, char* buf, int cap);
+
+static const char* featureLevelName(int fl) {
+  switch (fl) {
+    case 0xB000: return "11_0";
+    case 0xB100: return "11_1";
+    case 0xA000: return "10_0";
+    case 0xA100: return "10_1";
+    case 0xC000: return "12_0";
+    case 0xC100: return "12_1";
+    default: return "unknown";
+  }
+}
+
+int domino_diagnostics(void* h, char* buf, int cap) {
+  EngineHandle* e = (EngineHandle*)h;
+  if (!buf || cap <= 0) return 0;
+  if (!e || !e->player) {
+    CopyOut("{\"version\":\"0.2.4\",\"backend\":\"none\"}", buf, cap);
+    return 1;
+  }
+  const bool gpu = e->gpuOut != nullptr;
+  DiagnosticsInfo di;
+  di.backend = e->player->usingTensorRt()
+      ? "tensorrt"
+      : (e->player->srReady() ? "ncnn" : "off");
+  di.output = gpu ? "d3d11" : "cpu";
+  di.adapter = gpu ? e->gpuOut->adapterName() : std::string();
+  di.vendorId = gpu ? e->gpuOut->adapterVendorId() : 0;
+  di.deviceId = gpu ? e->gpuOut->adapterDeviceId() : 0;
+  di.memoryMB = gpu ? e->gpuOut->dedicatedVideoMemory() / (1024 * 1024) : 0;
+  di.featureLevel = featureLevelName(gpu ? e->gpuOut->featureLevel() : 0);
+  di.srInited = e->player->srReady();
+  di.srFailed = e->player->srFailed();
+  di.beauty = e->player->beautyActive();
+  di.targetW = e->player->srTargetW();
+  di.zeroCopyActive = e->player->gpuZeroCopyActive();
+  di.gpuSink = gpu;
+  di.gpuFatal = e->player->gpuOutputFatal();
+  di.fallbackReason = e->player->gpuFallbackReason();
+  di.cudart = e->player->cudartAvailable();
+  di.tensorrt = e->player->tensorRtReady();
+  di.vulkanGpuCount = ncnn::get_gpu_count();
+  di.fps = e->player->fpsDisplay();
+  CopyOut(diagnosticsToJson(di), buf, cap);
+  return 1;
 }
 
 // ---- 任务中心 ----

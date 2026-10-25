@@ -25,6 +25,7 @@ add_library(domino_engine SHARED
   ${ENGINE_SRC}/sr.cpp
   ${ENGINE_SRC}/trt_sr.cpp
   ${ENGINE_SRC}/trt/gpu_interop.cpp
+  ${ENGINE_SRC}/diagnostics.cpp
   ${ENGINE_SRC}/frame_output.cpp
   ${ENGINE_SRC}/player.cpp
   ${ENGINE_SRC}/audio.cpp

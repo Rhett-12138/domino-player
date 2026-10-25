@@ -175,6 +175,17 @@ ctest --test-dir build -C Release --output-on-failure      # ~5s，应 0 failed
 
 第三方组件和模型许可见 [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md)。特别注意 FFmpeg GPL 构建的分发约束。
 
+## 运行诊断
+
+播放页右下角 `选项 → 诊断` 可查看当前运行路径：
+
+- D3D11 adapter / VendorId / 显存 / Feature Level
+- TensorRT / NCNN 实际 backend
+- cudart、TensorRT、Vulkan 可用性
+- SR 目标、零拷贝是否 active、GPU fatal、降级原因
+
+诊断 JSON 可一键复制，用于定位“为什么只有 20 FPS”“为什么回退 CPU”等问题。
+
 ## 已知限制
 
 - TensorRT-RTX 4K 零拷贝约 30 FPS（RTX 4070 SUPER，720p 源）；复杂片源仍保留小于 15 FPS 自动降档。零拷贝需要 NVIDIA GPU 和随包 `cudart64_12.dll`，不可用时自动回退 CPU（4K 约 23.6 FPS）。

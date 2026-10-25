@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 import 'dart:ui' as ui;
@@ -213,7 +214,8 @@ class PlayerScreenState extends State<PlayerScreen> with SingleTickerProviderSta
 
   late final PlayHistory _history;
   bool _sidePanelOpen = false;
-  int _sideTab = 0; // 0=美化 1=播放历史
+  int _sideTab = 0; // 0=美化 1=播放历史 2=诊断
+  String _diagText = '尚未读取诊断信息';
   double _resumeAfterOpen = 0;
 
   String _currentPath = ''; // 当前视频路径（不常显，仅作对话框初始目录与文件名）
@@ -688,6 +690,17 @@ class PlayerScreenState extends State<PlayerScreen> with SingleTickerProviderSta
                           color: _sideTab == 1 ? Colors.lightBlueAccent : Colors.white54)),
                 ),
               ),
+              Expanded(
+                child: TextButton(
+                  onPressed: () {
+                    setState(() => _sideTab = 2);
+                    _refreshDiagnostics(e);
+                  },
+                  child: Text('诊断',
+                      style: TextStyle(
+                          color: _sideTab == 2 ? Colors.lightBlueAccent : Colors.white54)),
+                ),
+              ),
             ],
           ),
           const Divider(height: 1),
@@ -697,10 +710,66 @@ class PlayerScreenState extends State<PlayerScreen> with SingleTickerProviderSta
                     padding: const EdgeInsets.fromLTRB(10, 8, 10, 12),
                     child: _buildBeautyPanel(e),
                   )
-                : _buildHistoryPanel(),
+                : _sideTab == 1
+                    ? _buildHistoryPanel()
+                    : _buildDiagnosticsPanel(e),
           ),
         ],
       ),
+    );
+  }
+
+  void _refreshDiagnostics(EngineApi e) {
+    String text;
+    try {
+      final raw = e.diagnostics();
+      final decoded = jsonDecode(raw);
+      text = const JsonEncoder.withIndent('  ').convert(decoded);
+    } catch (_) {
+      text = e.diagnostics();
+    }
+    setState(() => _diagText = text);
+  }
+
+  Widget _buildDiagnosticsPanel(EngineApi e) {
+    return Column(
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(10, 8, 6, 4),
+          child: Row(
+            children: [
+              const Expanded(
+                child: Text('运行诊断', style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold)),
+              ),
+              IconButton(
+                tooltip: '刷新',
+                icon: const Icon(Icons.refresh, size: 18),
+                onPressed: () => _refreshDiagnostics(e),
+              ),
+              IconButton(
+                tooltip: '复制诊断 JSON',
+                icon: const Icon(Icons.copy, size: 18),
+                onPressed: () {
+                  Clipboard.setData(ClipboardData(text: _diagText));
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('诊断信息已复制'), duration: Duration(seconds: 1)),
+                  );
+                },
+              ),
+            ],
+          ),
+        ),
+        const Divider(height: 1),
+        Expanded(
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.fromLTRB(10, 8, 10, 12),
+            child: SelectableText(
+              _diagText,
+              style: const TextStyle(fontFamily: 'Consolas', fontSize: 11, height: 1.35),
+            ),
+          ),
+        ),
+      ],
     );
   }
 

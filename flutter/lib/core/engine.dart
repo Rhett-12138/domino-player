@@ -68,6 +68,9 @@ abstract class EngineApi {
   int get previewW;
   int get previewH;
   Uint8List previewBytes(int idx);
+
+  // ---- 诊断 ----
+  String diagnostics() => '{}';
 }
 
 /// domino_engine.dll 的 Dart FFI 绑定（见 flutter/native/engine_bridge.h）
@@ -210,6 +213,17 @@ class DominoEngine implements EngineApi {
     calloc.free(buf);
     return out;
   }
+
+  @override
+  String diagnostics() {
+    const cap = 32768;
+    final buf = calloc<Uint8>(cap);
+    _diagnostics(_h, buf, cap);
+    final s = buf.cast<Utf8>().toDartString();
+    calloc.free(buf);
+    return s;
+  }
+
   // ---- FFI 声明（字段用 Dart 类型；lookupFunction<原生签名, Dart 签名>） ----
   static final Pointer<Void> Function(Pointer<Utf8>, Pointer<Utf8>) _create = _lib
       .lookupFunction<Pointer<Void> Function(Pointer<Utf8>, Pointer<Utf8>),
@@ -268,6 +282,9 @@ class DominoEngine implements EngineApi {
       .lookupFunction<Int32 Function(Pointer<Void>), int Function(Pointer<Void>)>('domino_frame_h');
   static final int Function(Pointer<Void>, int) _setFullscreen = _lib
       .lookupFunction<Int32 Function(Pointer<Void>, Int32), int Function(Pointer<Void>, int)>('domino_set_fullscreen');
+  static final int Function(Pointer<Void>, Pointer<Uint8>, int) _diagnostics = _lib
+      .lookupFunction<Int32 Function(Pointer<Void>, Pointer<Uint8>, Int32),
+          int Function(Pointer<Void>, Pointer<Uint8>, int)>('domino_diagnostics');
 
   // ---- 任务 FFI ----
   static final int Function(Pointer<Void>, Pointer<Utf8>, int, int, int, Pointer<Utf8>) _taskCreate = _lib

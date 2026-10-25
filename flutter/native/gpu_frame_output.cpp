@@ -21,6 +21,7 @@ extern "C" {
 #include <cstring>
 #include <deque>
 #include <mutex>
+#include <string>
 #include <thread>
 #include <vector>
 
@@ -236,6 +237,11 @@ struct GpuFrameOutput::Impl {
   int front = -1;
   uint64_t gen = 0;
   bool ok = false;
+  std::string adapterName;
+  int adapterVendor = 0;
+  int adapterDevice = 0;
+  long long adapterMemory = 0;
+  int featureLevelValue = 0;
 
   EngineBeautyParams bp;
   std::atomic<bool> newFrame{ false };
@@ -297,6 +303,27 @@ bool GpuFrameOutput::Impl::init() {
   if (FAILED(hr) || !device || !ctx) {
     logx::warn("gpu beauty: D3D11CreateDevice failed 0x%08x", (unsigned)hr);
     return false;
+  }
+  featureLevelValue = (int)got;
+
+  ComPtr<IDXGIDevice> dxgiDevice;
+  ComPtr<IDXGIAdapter> dxgiAdapter;
+  ComPtr<IDXGIAdapter1> adapter1;
+  if (SUCCEEDED(device.As(&dxgiDevice)) &&
+      SUCCEEDED(dxgiDevice->GetAdapter(&dxgiAdapter)) &&
+      SUCCEEDED(dxgiAdapter.As(&adapter1))) {
+    DXGI_ADAPTER_DESC1 desc = {};
+    if (SUCCEEDED(adapter1->GetDesc1(&desc))) {
+      adapterVendor = (int)desc.VendorId;
+      adapterDevice = (int)desc.DeviceId;
+      adapterMemory = (long long)desc.DedicatedVideoMemory;
+      const int n = WideCharToMultiByte(CP_UTF8, 0, desc.Description, -1, nullptr, 0, nullptr, nullptr);
+      if (n > 1) {
+        std::string name((size_t)n - 1, '\0');
+        WideCharToMultiByte(CP_UTF8, 0, desc.Description, -1, name.data(), n, nullptr, nullptr);
+        adapterName = std::move(name);
+      }
+    }
   }
 
   ComPtr<ID3DBlob> vsBlob, psBlurBlob, psFinalBlob, psGpuBlob;
@@ -672,6 +699,12 @@ GpuFrameOutput::GpuFrameOutput() : impl_(std::make_shared<Impl>()) {
 GpuFrameOutput::~GpuFrameOutput() = default;
 
 bool GpuFrameOutput::ok() const { return impl_ && impl_->ok; }
+
+std::string GpuFrameOutput::adapterName() const { return impl_ ? impl_->adapterName : std::string(); }
+int GpuFrameOutput::adapterVendorId() const { return impl_ ? impl_->adapterVendor : 0; }
+int GpuFrameOutput::adapterDeviceId() const { return impl_ ? impl_->adapterDevice : 0; }
+long long GpuFrameOutput::dedicatedVideoMemory() const { return impl_ ? impl_->adapterMemory : 0; }
+int GpuFrameOutput::featureLevel() const { return impl_ ? impl_->featureLevelValue : 0; }
 
 void GpuFrameOutput::setBeautyParams(const EngineBeautyParams& bp) {
   if (!impl_) return;

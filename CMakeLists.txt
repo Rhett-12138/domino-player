@@ -26,6 +26,7 @@ add_library(domino_core STATIC
   src/sr.cpp
   src/trt_sr.cpp
   src/trt/gpu_interop.cpp
+  src/diagnostics.cpp
   src/frame_output.cpp
 )
 target_include_directories(domino_core PUBLIC src)
@@ -69,6 +70,7 @@ enable_testing()
 add_executable(domino_tests
   tests/test_main.cpp
   tests/test_config.cpp
+  tests/test_diagnostics.cpp
   tests/test_decode.cpp
   tests/test_encode.cpp
   tests/test_task.cpp

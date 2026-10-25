@@ -73,6 +73,15 @@ public:
   bool srAutoDegraded() const { return srAutoDegraded_.load(); }
   bool srReady() const { return srInited_.load(); }   // 异步：open 后可能短暂 false
   bool srFailed() const { return srFailed_.load(); }
+  bool usingTensorRt() const { return useTrt_.load(); }
+  bool gpuZeroCopyActive() const { return gpuSrActive_.load(); }
+  bool hasGpuSink() const { return gpuSink_ != nullptr; }
+  double srProducedFps() const { return srProducedFps_.load(); }
+  bool tensorRtReady() const { return trt_.ready(); }
+  bool cudartAvailable() const { return trt_.gpuInteropAvailable(); }
+  bool gpuOutputFatal() const { return gpuSink_ && gpuSink_->gpuFatal(); }
+  bool beautyActive() const { return beautyActive_.load(); }
+  std::string gpuFallbackReason() const;
 
   // ---- 控制 ----
   void setPaused(bool p);
@@ -148,6 +157,7 @@ private:
   void clearVideoQueue();
   void dropPendingFrame();
   void releaseGpuFrame(VideoFrame& f);
+  void setGpuFallbackReason(const std::string& reason);
   void updateBeautyActive() {
     beautyActive_.store(bp_.smooth > 0.001f || bp_.white > 0.001f ||
                         (bp_.filterIdx != 0 && bp_.filterAmt > 0.001f));
@@ -184,7 +194,10 @@ private:
   std::atomic<bool> srInited_{ false };
   std::atomic<bool> srFailed_{ false };
   std::atomic<bool> gpuSrDisabled_{ false };   // cudart/D3D 互操作失败后本会话回退 CPU
+  std::atomic<bool> gpuSrActive_{ false };     // 最近一帧实际走零拷贝路径
   std::atomic<double> srProducedFps_{ 0 };     // VideoWorker 实际 SR 产出帧率（自动降档用）
+  mutable std::mutex diagMu_;
+  std::string gpuFallbackReason_;
   double fpsLowSince_ = 0;
   double autoCooldownUntil_ = 0;
   double lastAutoCheck_ = 0;

@@ -625,6 +625,10 @@ void TensorRtSR::resetGpuInterop() {
   impl_->gpuInterop.reset();
 }
 
+bool TensorRtSR::gpuInteropAvailable() const {
+  return impl_ && impl_->gpuInterop.available();
+}
+
 void TensorRtSR::clear() {
   if (!impl_) return;
   impl_->reset();
@@ -641,6 +645,7 @@ int TensorRtSR::process(const uint8_t*, int, int, int, std::vector<uint8_t>&) { 
 bool TensorRtSR::outputSize(int, int, int, int&, int&) const { return false; }
 int TensorRtSR::processGpu(const uint8_t*, int, int, int, int, void*[3], IGpuFrameSink*) { return -1; }
 void TensorRtSR::resetGpuInterop() {}
+bool TensorRtSR::gpuInteropAvailable() const { return false; }
 void TensorRtSR::clear() {}
 
 #endif

@@ -10,6 +10,16 @@ Player::Player(IFrameOutput& out) : out_(out), gpuSink_(dynamic_cast<IGpuFrameSi
   audio_ = createDefaultAudioSink();   // 默认 WASAPI；可经 setAudioSink 注入其他实现
 }
 
+std::string Player::gpuFallbackReason() const {
+  std::lock_guard<std::mutex> lk(diagMu_);
+  return gpuFallbackReason_;
+}
+
+void Player::setGpuFallbackReason(const std::string& reason) {
+  std::lock_guard<std::mutex> lk(diagMu_);
+  gpuFallbackReason_ = reason;
+}
+
 Player::~Player() {
   shutdown();
 }
@@ -34,6 +44,7 @@ void Player::shutdown() {
   srInited_.store(false);
   srFailed_.store(false);
   srProducedFps_.store(0);
+  gpuSrActive_.store(false);
 }
 
 void Player::audioFeedStatic(Player* self) { self->audioFeed(); }
@@ -125,12 +136,14 @@ void Player::setNoSR(bool b) {
   noSR_.store(b);
   srFailed_.store(false);
   srProducedFps_.store(0);
+  gpuSrActive_.store(false);
   if (!gpuSink_ || !gpuSink_->gpuFatal()) gpuSrDisabled_.store(false);
   if (b) {
     // 用户主动关闭：清掉档位与自动状态
     srCeilingW_.store(0);
     srTargetW_.store(0);
     srAutoDegraded_.store(false);
+    setGpuFallbackReason("SR disabled");
   }
   fpsLowSince_ = 0;
   autoCooldownUntil_ = 0;
@@ -148,6 +161,7 @@ void Player::setSRTarget(int presetIdx, int targetW) {
   srAutoDegraded_.store(false);
   srFailed_.store(false);
   srProducedFps_.store(0);
+  gpuSrActive_.store(false);
   if (!gpuSink_ || !gpuSink_->gpuFatal()) gpuSrDisabled_.store(false);
   if (targetW > 0) noSR_.store(false);
   // 手动重选档位 = 重新尝试；清掉自动降档的冷却/追帧
@@ -225,6 +239,8 @@ bool Player::open(const std::string& path) {
   currentPath_ = path;
   srFailed_.store(false);
   srProducedFps_.store(0);
+  gpuSrActive_.store(false);
+  setGpuFallbackReason("");
   if (!gpuSink_ || !gpuSink_->gpuFatal()) gpuSrDisabled_.store(false);
   srAutoDegraded_.store(false);
   fpsLowSince_ = 0;
@@ -514,16 +530,23 @@ void Player::videoLoop() {
             f.w = sw;
             f.h = outH;
             gpuSr = true;
+            if (!gpuSrActive_.exchange(true)) setGpuFallbackReason("");
             srDone = true;
           } else {
             gpuSink_->releaseGpuSrFrame(slot);
             gpuSrDisabled_.store(true);
+            gpuSrActive_.store(false);
+            setGpuFallbackReason("cudart/D3D interop failed");
             fprintf(stderr, "zero-copy: processGpu failed (size %d vs %d), fallback CPU\n",
                     sw, outW);
           }
         }
       }
       if (!gpuSr) {
+        gpuSrActive_.store(false);
+        if (gpuSink_ && !gpuSrDisabled_.load() && !noBeauty) {
+          setGpuFallbackReason("beauty/filter active");
+        }
         const int sw = useTrt_.load()
           ? trt_.process(srcBuf_.data(), vid_.vw, vid_.vh, inW, f.rgb)
           : sr_.process(srcBuf_.data(), vid_.vw, vid_.vh, inW, f.rgb);
@@ -692,6 +715,8 @@ bool Player::presentFrame() {
     if (gpuSink_ && !gpuSink_->presentGpuSrFrame(slot, pendingFrame_.w, pendingFrame_.h)) {
       if (gpuSink_->gpuFatal()) {
         gpuSrDisabled_.store(true);
+        gpuSrActive_.store(false);
+        setGpuFallbackReason("GPU present fatal/query timeout");
         fprintf(stderr, "zero-copy: present fatal, fallback CPU\n");
       }
     }

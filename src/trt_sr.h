@@ -29,6 +29,8 @@ public:
                  void* textures[3], IGpuFrameSink* lockSink = nullptr);
   // D3D 纹理尺寸/实例即将变化时，先注销 cudart 资源，避免 D3D 纹理先销毁。
   void resetGpuInterop();
+  // 诊断用：cudart 是否可加载；不会初始化 D3D 资源。
+  bool gpuInteropAvailable() const;
   void clear();
 
 private:

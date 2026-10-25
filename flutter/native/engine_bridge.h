@@ -61,6 +61,9 @@ DOMINO_EXPORT int    domino_set_fullscreen(void* h, int on);
 DOMINO_EXPORT int    domino_frame_w(void* h);
 DOMINO_EXPORT int    domino_frame_h(void* h);
 
+// 诊断 JSON（UTF-8）：GPU/adapter、backend、SR、cudart/TensorRT、Vulkan、fallback reason
+DOMINO_EXPORT int    domino_diagnostics(void* h, char* buf, int cap);
+
 // ---- 任务中心（离线超分） ----
 // 创建任务，返回任务索引（-1 失败）；source=源视频，targetW=输出宽，desc=备注
 DOMINO_EXPORT int    domino_task_create(void* h, const char* source, int targetW, const char* desc);

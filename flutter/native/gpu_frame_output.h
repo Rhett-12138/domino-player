@@ -5,6 +5,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <string>
 
 // D3D11/HLSL 美颜帧输出（Windows 前端专用）。
 // 通过 DXGI shared handle 交给 Flutter GPU surface；初始化失败时调用方回退 CPU。
@@ -14,6 +15,13 @@ public:
   ~GpuFrameOutput() override;
 
   bool ok() const;
+
+  // 诊断信息（D3D11 adapter / feature level）
+  std::string adapterName() const;
+  int adapterVendorId() const;
+  int adapterDeviceId() const;
+  long long dedicatedVideoMemory() const;
+  int featureLevel() const;
 
   void presentFrame(const uint8_t* rgb, int w, int h) override;
   void beginPresent() override {}
