@@ -17,7 +17,7 @@ if (!$OutputDir) { $OutputDir = Join-Path $repo 'dist' }
 
 if (!$Version) {
   $pubspec = Get-Content (Join-Path $flutter 'pubspec.yaml') -Raw
-  if ($pubspec -notmatch '(?m)^version:\s*([0-9]+\.[0-9]+\.[0-9]+)') {
+  if ($pubspec -notmatch '(?m)^version:\s*([0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?)') {
     throw 'cannot read version from flutter/pubspec.yaml'
   }
   $Version = $Matches[1]

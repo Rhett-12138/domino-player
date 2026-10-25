@@ -3,7 +3,7 @@
 
 TEST(DiagnosticsJsonBasic) {
   DiagnosticsInfo d;
-  d.version = "0.3.0";
+  d.version = "0.3.0-beta.1";
   d.backend = "tensorrt";
   d.mode = "performance";
   d.modeActive = "auto";
@@ -26,7 +26,7 @@ TEST(DiagnosticsJsonBasic) {
   d.vulkanGpuCount = 1;
   d.fps = 29.8;
   const std::string s = diagnosticsToJson(d);
-  EXPECT_TRUE(s.find("\"version\":\"0.3.0\"") != std::string::npos);
+  EXPECT_TRUE(s.find("\"version\":\"0.3.0-beta.1\"") != std::string::npos);
   EXPECT_TRUE(s.find("\"backend\":\"tensorrt\"") != std::string::npos);
   EXPECT_TRUE(s.find("\"mode\":\"performance\"") != std::string::npos);
   EXPECT_TRUE(s.find("\"modeActive\":\"auto\"") != std::string::npos);

@@ -3,7 +3,7 @@
 
 // 诊断信息是纯数据；JSON 序列化不依赖 GPU/Windows，便于单测。
 struct DiagnosticsInfo {
-  std::string version = "0.3.0";
+  std::string version = "0.3.0-beta.1";
   std::string backend = "off";      // tensorrt / ncnn / off
   std::string mode = "auto";        // 用户期望 auto / compat / performance
   std::string modeActive = "auto";  // 当前 open 已应用

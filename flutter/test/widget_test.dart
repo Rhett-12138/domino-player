@@ -23,7 +23,7 @@ class FakeEngine implements EngineApi {
 
   final List<_FakeTask> tasks = [];
   String diagJson =
-      '{"version":"0.3.0","backend":"tensorrt","output":"d3d11","zeroCopy":{"active":true}}';
+      '{"version":"0.3.0-beta.1","backend":"tensorrt","output":"d3d11","zeroCopy":{"active":true}}';
   int backendModeState = 0;
   bool backendModeApplied = true;
   bool backendModePendingState = false;

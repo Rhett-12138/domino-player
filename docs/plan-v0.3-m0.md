@@ -41,7 +41,7 @@
 
 ```json
 {
-  "version": "0.3.0",
+  "version": "0.3.0-beta.1",
   "backend": "tensorrt",
   "mode": "auto",
   "modeActive": "auto",

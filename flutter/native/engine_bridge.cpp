@@ -381,7 +381,7 @@ int domino_diagnostics(void* h, char* buf, int cap) {
   EngineHandle* e = (EngineHandle*)h;
   if (!buf || cap <= 0) return 0;
   if (!e || !e->player) {
-    CopyOut("{\"version\":\"0.3.0\",\"backend\":\"none\"}", buf, cap);
+    CopyOut("{\"version\":\"0.3.0-beta.1\",\"backend\":\"none\"}", buf, cap);
     return 1;
   }
   const bool gpu = e->gpuOut != nullptr;
