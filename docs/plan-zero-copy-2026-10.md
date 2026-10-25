@@ -108,6 +108,7 @@ context，D3D11 资源才能安全互操作。
 - 任务中心：新建 **高质量（FullSource, sr_input=2）** 任务，`test_long.mp4` 450 帧完成；meta 写入 `sr_input=2` / `model=realistic`。
 - 任务中心 HQ 模型：再建 **模型档位=高质量** 任务，`model=realistic_hq`（x4plus），450 帧完成；两次任务均为新增验证任务（`task-1792896344-0` / `task-1792896650-0`）。
 - 既有用户任务目录（包括 `task-1792330123-0`）未删除、未改写。
+- 低速回归（2026-10-25）：VideoWorker 的 SR 产出 FPS 低于片源时，worker 会跳过旧源帧而不是让媒体 PTS 慢慢走；播放保持 1x（竖屏 4K 实测从慢放恢复为约 12 FPS 跳帧播放，桌面 4K 仍 30 FPS）。自动降档改为使用 worker 实际 SR 产出 FPS，避免跳帧后的呈现计数误判。
 
 ## 打包/运行要求
 

@@ -31,7 +31,8 @@
 - 播放页可切换 **SR 关闭 / 1080p / 2K / 4K**；NVIDIA RTX 上自动使用 TensorRT-RTX，其他 Vulkan 显卡走 NCNN。
 - 解码和 SR 已移到原生 VideoWorker，UI 线程只负责取帧和呈现；seek 带 generation，避免旧帧回跳。
 - RTX 4070 SUPER、720p 源：TensorRT-RTX 下 1080p / 2K 约 **29.6 FPS**（源 30fps 上限）；4K 已接入 **TensorRT→D3D11 零拷贝输出**，Flutter App 实机约 **30 FPS**（无 D2H/CPU 转换/整帧上传）。NCNN 回退约 30 / 21.7 / 9 FPS。零拷贝不可用时自动回退 CPU 路径（4K 约 23.6 FPS）。
-- **自动降档**：实际呈现 FPS **低于 15** 持续约 2 秒才降档；4K / 2K 先降到 1080p，1080p 仍低于 15 才关闭 SR。手动选档会清除自动降档状态并重试；启动前 3 秒不触发。
+- **自动降档**：VideoWorker 实际 SR 产出 FPS **低于 15** 持续约 2 秒才降档；4K / 2K 先降到 1080p，1080p 仍低于 15 才关闭 SR。手动选档会清除自动降档状态并重试；启动前 3 秒不触发。
+- **SR 慢时保持播放速度**：当 SR 产出低于片源帧率时，VideoWorker 会跳过旧的源帧而不是让媒体时间变慢；保持 1x 播放（可能出现跳帧），避免“低帧率导致视频慢放”。
 - 开启 SR 后仍可叠加 GPU 美颜和滤镜。
 - 强制兼容模式：设置环境变量 `DOMINO_NO_TRT=1` 可关闭 TensorRT，全部走 NCNN。
 

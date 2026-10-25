@@ -33,6 +33,7 @@ void Player::shutdown() {
   sr_.clear();   // 全局 GPU 实例由前端在停止所有任务后统一销毁
   srInited_.store(false);
   srFailed_.store(false);
+  srProducedFps_.store(0);
 }
 
 void Player::audioFeedStatic(Player* self) { self->audioFeed(); }
@@ -123,6 +124,7 @@ void Player::ensureSR() {
 void Player::setNoSR(bool b) {
   noSR_.store(b);
   srFailed_.store(false);
+  srProducedFps_.store(0);
   if (!gpuSink_ || !gpuSink_->gpuFatal()) gpuSrDisabled_.store(false);
   if (b) {
     // 用户主动关闭：清掉档位与自动状态
@@ -145,6 +147,7 @@ void Player::setSRTarget(int presetIdx, int targetW) {
   srTargetW_.store(targetW);
   srAutoDegraded_.store(false);
   srFailed_.store(false);
+  srProducedFps_.store(0);
   if (!gpuSink_ || !gpuSink_->gpuFatal()) gpuSrDisabled_.store(false);
   if (targetW > 0) noSR_.store(false);
   // 手动重选档位 = 重新尝试；清掉自动降档的冷却/追帧
@@ -169,7 +172,11 @@ void Player::maybeAutoDegrade(double now) {
     fpsLowSince_ = 0;
     return;
   }
-  const double fps = fpsDisplay_;
+  double fps = fpsDisplay_;
+  // 零拷贝/呈现可能因跳帧让 fpsDisplay 低于真实 SR 产出；优先用 VideoWorker
+  // 的实际 SR 帧率，避免慢输出把 24FPS SR 误判成低帧率并降档。
+  const double produced = srProducedFps_.load();
+  if (srInited_.load() && !srFailed_.load() && produced > 0.0) fps = produced;
   if (fps <= 0.0 || fps >= 15.0) {
     fpsLowSince_ = 0;
     return;
@@ -217,6 +224,7 @@ bool Player::open(const std::string& path) {
   if (!vid_.open(path.c_str())) return false;
   currentPath_ = path;
   srFailed_.store(false);
+  srProducedFps_.store(0);
   if (!gpuSink_ || !gpuSink_->gpuFatal()) gpuSrDisabled_.store(false);
   srAutoDegraded_.store(false);
   fpsLowSince_ = 0;
@@ -417,6 +425,8 @@ void Player::clearVideoQueue() {
 }
 
 void Player::videoLoop() {
+  int srProduceCount = 0;
+  auto srProduceT0 = std::chrono::steady_clock::now();
   while (!videoStop_.load()) {
     // seek 必须在 paused 分支之前消费：暂停时拖动进度条/EOF 回卷也会请求 seek，
     // 否则 wait predicate 永远为真，worker 会空转烧 CPU。
@@ -478,6 +488,7 @@ void Player::videoLoop() {
       }
     }
 
+    bool srDone = false;
     if (needSR) {
       const int inW = inW_.load() > 0 ? inW_.load() : srTargetW_.load() / 4;
       bool gpuSr = false;
@@ -503,6 +514,7 @@ void Player::videoLoop() {
             f.w = sw;
             f.h = outH;
             gpuSr = true;
+            srDone = true;
           } else {
             gpuSink_->releaseGpuSrFrame(slot);
             gpuSrDisabled_.store(true);
@@ -518,6 +530,7 @@ void Player::videoLoop() {
         if (sw > 0) {
           f.w = sw;
           f.h = (int)(f.rgb.size() / (size_t)sw / 3);
+          srDone = true;
         } else {
           srFailed_.store(true);
           f.rgb.assign(srcBuf_.data(), srcBuf_.data() + (size_t)vid_.vw * vid_.vh * 3);
@@ -529,6 +542,16 @@ void Player::videoLoop() {
       f.rgb.assign(srcBuf_.data(), srcBuf_.data() + (size_t)vid_.vw * vid_.vh * 3);
       f.w = vid_.vw;
       f.h = vid_.vh;
+    }
+    if (srDone) {
+      srProduceCount++;
+      const auto now = std::chrono::steady_clock::now();
+      const double el = std::chrono::duration<double>(now - srProduceT0).count();
+      if (el >= 1.0) {
+        srProducedFps_.store(srProduceCount / el);
+        srProduceCount = 0;
+        srProduceT0 = now;
+      }
     }
     if (seekGen_.load() != gen) {
       releaseGpuFrame(f);
@@ -578,6 +601,33 @@ void Player::prefetch() {
   pendingFrame_ = std::move(f);
   pendingPts_ = pendingFrame_.pts;
   havePending_ = true;
+}
+
+// 实时 SR 慢于片源时，worker 产出的 PTS 会落后媒体时钟；若仍逐帧呈现，
+// 片源时间就会被拉长（用户感知为“慢放”）。这里丢弃已落后太多的帧，
+// 保持媒体时间 1x；帧率下降由 fpsDisplay/自动降档处理。
+void Player::dropLateFrames() {
+  // 只有 SR 实际产出低于片源帧率时才追帧；普通 SlowFrameOutput 测试的
+  // SR 产出仍是源帧率，保持原有慢输出/自动降档语义。SR 关闭/失败不追帧。
+  if (paused_.load() || noSR_.load() || !srInited_.load() || srFailed_.load() ||
+      !havePending_ || pendingEOF_) {
+    return;
+  }
+  const double produced = srProducedFps_.load();
+  if (fps_ <= 0.0 || produced <= 0.0 || produced >= fps_ * 0.95) return;
+  {
+    // 队列里有下一帧说明 UI/呈现仍是主要瓶颈；此时不要跳帧。
+    std::lock_guard<std::mutex> lk(videoMu_);
+    if (!videoFrames_.empty()) return;
+  }
+  constexpr double kMaxLagSec = 0.15;
+  const double lag = currentMediaClock() - pendingPts_;
+  if (lag <= kMaxLagSec) return;
+  // 慢 SR 不能在 UI 端无限丢帧（会把画面丢空）。只让 VideoWorker 跳过
+  // 旧的源帧、对接近当前媒体时钟的帧跑 SR；当前 pending 仍然上屏，
+  // 下一帧会跳到一个更接近媒体时钟的帧，从而保持 1x。
+  // 一次追帧请求只能设置一次，避免 UI 每帧重设导致 worker 永远跳过。
+  if (dropUntilPts_.load() <= 0) dropUntilPts_.store(currentMediaClock());
 }
 
 void Player::resetClockAnchors() {
@@ -688,6 +738,7 @@ void Player::pump() {
   maybeAutoDegrade(now);
 
   prefetch();
+  dropLateFrames();
   if (readyToPresent()) {
     if (presentFrame()) startAudio();   // 第一帧呈现时启动音频
   }

@@ -99,6 +99,7 @@ public:
   bool processSeek();
   // 从 VideoWorker 队列取一帧（UI 线程调用，不跑解码/SR）
   void prefetch();
+  void dropLateFrames();
   // 是否有已处理好的帧且已到呈现截止时间（惰性初始化 baseWall）
   bool readyToPresent();
   // 呈现当前帧：上传纹理 + 推进播放时钟；返回本帧是否应启动音频
@@ -183,6 +184,7 @@ private:
   std::atomic<bool> srInited_{ false };
   std::atomic<bool> srFailed_{ false };
   std::atomic<bool> gpuSrDisabled_{ false };   // cudart/D3D 互操作失败后本会话回退 CPU
+  std::atomic<double> srProducedFps_{ 0 };     // VideoWorker 实际 SR 产出帧率（自动降档用）
   double fpsLowSince_ = 0;
   double autoCooldownUntil_ = 0;
   double lastAutoCheck_ = 0;
