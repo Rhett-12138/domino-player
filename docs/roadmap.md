@@ -39,12 +39,19 @@
 ### 进行中 / 待办（按优先级）
 1. [x] **任务中心端到端人工验收**：建任务 → 编码 → 进度 → 断点续编 → 边播放；用户已确认通过
 2. [x] **高性能推理后端**：TensorRT-RTX 1.7.1 接入（免 CUDA Toolkit、便携 220MB），headless 4K 27.6 FPS / App 4K 23.6 FPS、离线 FullSource 4.34s；NCNN 保留回退，DirectML 等兼容性后置（见 `docs/plan-backends-2026-10.md`）
-3. [ ] **2K/4K 实时 SR 优化**：TensorRT-RTX 后 2K 约 29.6 FPS；**TensorRT→D3D11 零拷贝已接入，App 4K 约 30.0 FPS**（旧 CPU 输出 23.6 FPS；cudart copy ~0.5ms）；自动降档为 **实际 FPS<15 持续 2s** 才降（见 `docs/plan-zero-copy-2026-10.md`）
+3. [x] **2K/4K 实时 SR 优化**：TensorRT-RTX 后 2K 约 29.6 FPS；**TensorRT→D3D11 零拷贝已接入，App 4K 约 30.0 FPS**（旧 CPU 输出 23.6 FPS；cudart copy ~0.5ms）；自动降档使用 SR 实际产出 FPS，**低于 15 持续 2s** 才降；低 SR FPS 时跳帧保持 1x（见 `docs/plan-zero-copy-2026-10.md`）
 4. [ ] **高质量模型盲测/模型包**：验证 x4plus / x4plus-anime 在真人、动画、文字上的收益；若继续增加模型，做可选模型包/下载（见 `docs/plan-model-library-2026-10.md`）
 5. [ ] **真人 2x/3x 模型**：动画 x2/x3 已接入；SRMD 与当前 NCNN 不兼容，Real-CUGAN 真人实测过度平滑（不建议），Real-ESRGAN x2plus/BSRGAN2X 实测速度不适合替代 General 4x（见 `docs/plan-realistic-2x3-models-2026-10.md`）
 6. [ ] **离线 SR 大图优化**：FullSource 1080p→4K 中间帧 7680×4320、峰值约 1.9GB；评估 tile + overlap
 7. [ ] 打包分发：安装包/绿色版、图标、关于页
 8. [ ] 移动端验证：Android/iOS 注入 `AudioSink` 实现（引擎已可移植）
+
+## 下一阶段：V0.3（Windows 产品化）
+
+- 目标：从“能跑、帧率高”转向“普通用户敢装、不同机器能跑、出问题能定位”。
+- 重点顺序：**兼容性/降级诊断 → 安装包与分发 → 长稳/zero-copy 回归 → 4K tile/模型覆盖 → 移动端 spike（V0.4）**。
+- 不把 4K 60、完整移动端、云模型商店放进 V0.3 主线。
+- 详细拆分、验收指标和待确认决策见 [`docs/plan-v0.3.md`](plan-v0.3.md)。
 
 ## 里程碑
 | 里程碑 | 内容 | 状态 |
