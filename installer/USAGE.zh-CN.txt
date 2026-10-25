@@ -1,0 +1,44 @@
+﻿Domino Player - Windows x64 使用说明
+
+启动
+  安装版从开始菜单启动；绿色版双击 domino_flutter.exe。
+  打开视频后，可在右侧「选项 -> 诊断」查看当前运行路径。
+
+实时超分
+  底部按钮切换：关闭 / 1080p / 2K / 4K。
+  低帧率时保持 1x 播放并跳帧；持续低于 15 FPS 会自动降档。
+  TensorRT 首次使用会构建 engine 缓存（约 12-20 秒）。
+
+后端策略
+  选项 -> 诊断 -> 后端策略：自动 / 兼容 / 性能。
+  修改后需要重新打开视频才会重建实时后端。
+  离线任务中心仍按任务自身设置选择 TensorRT / NCNN。
+  启动默认值可通过环境变量 DOMINO_BACKEND=auto|compat|performance 设置。
+
+硬件与运行时
+  - 64 位 Windows 10/11（1809+）。
+  - NCNN 路径需要支持 Vulkan 的独立显卡或集成显卡。
+  - 缺少 VCRUNTIME140 / MSVCP140 时，安装器会提示安装
+    Microsoft Visual C++ 2015-2022 Redistributable (x64):
+    https://aka.ms/vs/17/release/vc_redist.x64.exe
+  - TensorRT 需要 NVIDIA RTX 显卡；发布包已包含 TensorRT-RTX 与 cudart，
+    不需要安装 CUDA Toolkit。
+  - 混合显卡机器可用 DOMINO_D3D_ADAPTER=default 退回默认 adapter；
+    零拷贝不可用时会自动降级到 CPU 输出。
+
+数据与隐私
+  - 播放历史：%APPDATA%\DominoPlayer\history.json
+  - 离线任务：%APPDATA%\DominoPlayer\sr-tasks\
+  - TensorRT engine：%APPDATA%\DominoPlayer\trt-rtx\
+  - 所有播放、超分、美颜和编码都在本地完成，不上传视频。
+  - 卸载程序不会删除 %APPDATA%\DominoPlayer；需要时可手动清理。
+
+故障定位
+  打开「选项 -> 诊断」，点击复制按钮，把 JSON 连同问题描述一起反馈。
+  诊断包含 adapter、驱动版本、backend、cudart/TensorRT、Vulkan、
+  零拷贝状态和最近降级原因。
+
+许可
+  项目源码：MIT（见 LICENSE）。
+  FFmpeg / NCNN / Flutter / TensorRT-RTX / CUDA Runtime / 模型权重：
+  见 THIRD_PARTY_NOTICES.md 与 assets/third_party/、assets/models/ 下的 NOTICE。

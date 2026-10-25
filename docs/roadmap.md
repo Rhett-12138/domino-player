@@ -52,7 +52,8 @@
 - 重点顺序：**兼容性/降级诊断 → 安装包与分发 → 长稳/zero-copy 回归 → 4K tile/模型覆盖 → 移动端 spike（V0.4）**。
 - 不把 4K 60、完整移动端、云模型商店放进 V0.3 主线。
 - M0 基本完成：诊断 JSON/诊断页、adapter/驱动/backend/cudart/TensorRT/Vulkan/zero-copy、D3D11VA H.264 能力、fallback reason、自动/兼容/性能三档已接入；1 小时 4K 零拷贝长稳通过（60.1 分钟、5 次 seek、资源无持续增长）。剩余真实混合显卡笔记本与任务边播长稳。见 [`docs/plan-v0.3-m0.md`](plan-v0.3-m0.md)。
-- 详细拆分、验收指标和已确认决策见 [`docs/plan-v0.3.md`](plan-v0.3.md)；M1 安装包草案见 [`docs/plan-v0.3-m1.md`](plan-v0.3-m1.md)。
+- M1 进行中：Inno Setup 6.7.3 安装包、per-user 安装、VC++ Runtime 检测、绿色 zip 和 SHA256 已落地；安装版 4K TensorRT 冒烟通过。剩余干净虚拟机、文件关联和签名证书。见 [`docs/plan-v0.3-m1.md`](plan-v0.3-m1.md)。
+- 详细拆分、验收指标和已确认决策见 [`docs/plan-v0.3.md`](plan-v0.3.md)。
 
 ## 里程碑
 | 里程碑 | 内容 | 状态 |

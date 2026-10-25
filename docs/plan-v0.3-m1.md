@@ -47,11 +47,36 @@ DominoPlayer/
 - 安装包和 zip 版本号/SHA256 一致；卸载不删除 `%APPDATA%/DominoPlayer`。
 - 首次 TensorRT engine 构建时间有提示，不显示“卡死”。
 
-## 待办
+## 当前进度（2026-10-25）
 
-- [ ] 选定并锁定 Inno Setup 版本/脚本
-- [ ] VC++ Runtime 检测与提示
-- [ ] 安装/卸载/文件关联（可选）冒烟
-- [ ] 干净虚拟机验证
-- [ ] 签名证书与 SmartScreen 说明
-- [ ] 与 M0 一起回归：诊断页在安装版路径下仍能找到模型和日志
+- [x] 锁定 Inno Setup 6.7.3；脚本 `installer/domino.iss`
+- [x] `installer/build.ps1`：构建 release、绿色 zip、安装包、SHA256
+- [x] per-user 安装（`{localappdata}\Programs\DominoPlayer`），无需管理员
+- [x] VC++ Runtime 检测：缺 `VCRUNTIME140/MSVCP140/VCRUNTIME140_1` 时提示并打开官方下载；中止安装
+- [x] 安装/卸载冒烟：静默安装到临时目录、4K/TensorRT 启动、卸载后目录清空、`%APPDATA%\DominoPlayer` 保留
+- [x] 安装版实测：`version=0.3.0`、`backend=tensorrt`、`targetW=3840`、`zeroCopy.active=true`、约 30 FPS
+- [x] 未签名提示文本 + SHA256 输出
+- [ ] 干净 Windows 10/11 虚拟机、缺 VC++ Runtime 场景
+- [ ] 文件关联（当前应用不解析命令行文件参数，暂不绑定）
+- [ ] 代码签名证书（待组织提供）
+
+## 产物
+
+```text
+dist/domino-player-v0.3.0-win64-setup.exe
+dist/domino-player-v0.3.0-win64-setup.exe.sha256
+dist/domino-player-v0.3.0-win64.zip
+dist/domino-player-v0.3.0-win64.zip.sha256
+```
+
+安装包约 151MB，绿色 zip 约 235MB；两者共用同一份运行时、模型和 `使用说明.txt`。`dist/` 被 Git 忽略，不提交二进制。
+
+本地构建校验（2026-10-25）：
+
+```text
+setup SHA256 82595E9DDE53125F5B03F00D79DD971579AF6DF0D2150A1624869524044D7ED1
+zip   SHA256 28883C7DA2F030C23FF4714C779CBF89317209426CE7810F3BE83102CFFEB058
+```
+
+安装包静默安装/卸载均 exit 0；安装版 `domino_flutter.exe` FileVersion `0.3.0+7`；安装版打开测试片并切 4K 后诊断：
+`backend=tensorrt`、`targetW=3840`、`zeroCopy.active=true`、约 30 FPS。

@@ -3,6 +3,9 @@ build/
 dist/
 *.log
 
+# installer/build.ps1 临时生成的 Inno 预处理器变量
+installer/build.generated.iss
+
 # 预编译依赖（体积大，本地下载）
 libs/ffmpeg/
 libs/ncnn/

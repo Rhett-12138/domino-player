@@ -1,0 +1,17 @@
+﻿Domino Player Windows x64
+
+此版本暂未代码签名（code signing）。首次运行或安装时，Windows SmartScreen 可能显示
+“Windows 已保护你的电脑”。
+
+如需继续：
+1. 点击“更多信息”；
+2. 确认发布者为 Rhett-12138 / Domino Player 项目的发布页；
+3. 点击“仍要运行”。
+
+发布页会提供安装包/绿色包的 SHA256。请优先从项目 Releases 页面下载；
+若哈希不一致，请不要运行。
+
+安装器按当前用户安装，不需要管理员权限；不会删除
+%APPDATA%\DominoPlayer 中的播放历史、任务和 TensorRT engine 缓存。
+
+需要 Microsoft Visual C++ 2015-2022 x64 运行库；缺失时安装器会提示下载。

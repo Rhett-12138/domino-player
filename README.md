@@ -89,12 +89,16 @@
 
 ## 下载（Windows 预编译包）
 
-无需自行编译：到 [**Releases**](https://github.com/Rhett-12138/domino-player/releases) 下载
-`domino-player-vX.Y.Z-win64.zip`，解压后双击 `domino_flutter.exe` 即可运行（详见包内 `运行说明.txt`）。
+无需自行编译：到 [**Releases**](https://github.com/Rhett-12138/domino-player/releases) 下载。
 
-- 需 64 位 Windows 10/11；超分需支持 Vulkan 的独立显卡。
+- **安装包**：`domino-player-vX.Y.Z-win64-setup.exe`。按当前用户安装，不需要管理员权限；安装器会检测 VC++ Runtime。
+- **绿色包**：`domino-player-vX.Y.Z-win64.zip`，解压后双击 `domino_flutter.exe`。
+
+两者使用同一份运行时和模型，详见包内 `使用说明.txt`。
+
+- 需 64 位 Windows 10/11（1809+）；超分需支持 Vulkan 的独立显卡。
 - 若提示缺少 `VCRUNTIME140/MSVCP140`，安装 [Microsoft Visual C++ 可再发行组件 (x64)](https://aka.ms/vs/17/release/vc_redist.x64.exe)。
-- 未签名 exe 首次运行可能触发 SmartScreen：点「更多信息 → 仍要运行」。
+- 未签名 exe 首次运行可能触发 SmartScreen：点「更多信息 → 仍要运行」。发布页会提供 SHA256。
 
 ## 前置条件
 
@@ -122,6 +126,17 @@ flutter build windows --debug     # 产物：build/windows/x64/runner/Debug/domi
 ```
 
 引擎桥 DLL（`domino_engine.dll`）、FFmpeg/NCNN 运行库与模型由构建自动拷到 runner 目录，直接运行 exe 即可。
+
+### 发布包 / 安装包
+
+```powershell
+# 需要 Inno Setup 6（winget install --id JRSoftware.InnoSetup）
+powershell -ExecutionPolicy Bypass -File installer/build.ps1
+# 只打绿色 zip，不构建安装器
+powershell -ExecutionPolicy Bypass -File installer/build.ps1 -NoInstaller
+```
+
+版本从 `flutter/pubspec.yaml` 读取；产物写入 `dist/`（Git 忽略），脚本同时生成 SHA256。
 
 ### C++ 引擎 + 单元测试
 
