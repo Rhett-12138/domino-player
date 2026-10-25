@@ -30,7 +30,7 @@
 
 - 播放页可切换 **SR 关闭 / 1080p / 2K / 4K**；NVIDIA RTX 上自动使用 TensorRT-RTX，其他 Vulkan 显卡走 NCNN。
 - 解码和 SR 已移到原生 VideoWorker，UI 线程只负责取帧和呈现；seek 带 generation，避免旧帧回跳。
-- RTX 4070 SUPER、720p 源：TensorRT-RTX 下 1080p / 2K 约 **29.6 FPS**（源 30fps 上限）；4K 在 headless Player 约 **27.6 FPS**，Flutter App 实机约 **23.6 FPS**（GPU 纹理上传/Flutter 呈现仍有额外开销）。NCNN 回退约 30 / 21.7 / 9 FPS。
+- RTX 4070 SUPER、720p 源：TensorRT-RTX 下 1080p / 2K 约 **29.6 FPS**（源 30fps 上限）；4K 已接入 **TensorRT→D3D11 零拷贝输出**，Flutter App 实机约 **30 FPS**（无 D2H/CPU 转换/整帧上传）。NCNN 回退约 30 / 21.7 / 9 FPS。零拷贝不可用时自动回退 CPU 路径（4K 约 23.6 FPS）。
 - **自动降档**：实际呈现 FPS **低于 15** 持续约 2 秒才降档；4K / 2K 先降到 1080p，1080p 仍低于 15 才关闭 SR。手动选档会清除自动降档状态并重试；启动前 3 秒不触发。
 - 开启 SR 后仍可叠加 GPU 美颜和滤镜。
 - 强制兼容模式：设置环境变量 `DOMINO_NO_TRT=1` 可关闭 TensorRT，全部走 NCNN。
@@ -176,7 +176,8 @@ ctest --test-dir build -C Release --output-on-failure      # ~5s，应 0 failed
 
 ## 已知限制
 
-- TensorRT-RTX headless 4K 约 27.6 FPS，Flutter App 实机约 23.6 FPS（RGB→RGBA 上传、D3D11/Flutter 纹理呈现另占约 4–7ms）；4K 仍未稳定 30 FPS，复杂片源保留自动降档。
+- TensorRT-RTX 4K 零拷贝约 30 FPS（RTX 4070 SUPER，720p 源）；复杂片源仍保留小于 15 FPS 自动降档。零拷贝需要 NVIDIA GPU 和随包 `cudart64_12.dll`，不可用时自动回退 CPU（4K 约 23.6 FPS）。
+- 竖屏/超宽按 4K 高度/宽度上限输出（如竖屏 2424×4320），像素量更高时帧率会低于 30 FPS。
 - TensorRT-RTX 运行时约 220MB，发布包会明显变大；后续可拆成可选高性能组件。首次使用需要构建 engine 缓存（约 12–20s）。
 - 真人 2x/3x 暂未接入可用模型；动画 x2/x3 已支持，真人 1.5x 可用 2x 后缩放。
 - `x4plus` / `x4plus-anime` 输入宽限制 960，质量更好但明显更慢；1080p→4K FullSource 中间帧较大，峰值内存约 1.9GB。
