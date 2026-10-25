@@ -105,7 +105,8 @@ context，D3D11 资源才能安全互操作。
 - 超宽：1920×800 → 3840×1600，**30.1 FPS**，比例正常。
 - 美颜切换：美白 46% 时自动走 CPU，4K 约 **23.4 FPS**；拖回 0% 后恢复零拷贝 **30.0 FPS**，全程不崩溃。
 - `DOMINO_D3D_ADAPTER=default` 在当前机器也能正常上屏并保持零拷贝；**真实“核显为默认 adapter”的混合显卡机器仍需外机确认**（当前机器只有 NVIDIA/AMD，未构造驱动级混合输出）。
-- 任务中心：新建 **高质量（FullSource, sr_input=2）** 任务，`test_long.mp4` 450 帧完成；输出 `task.mp4`，meta 写入 `sr_input=2` / `model=realistic`。
+- 任务中心：新建 **高质量（FullSource, sr_input=2）** 任务，`test_long.mp4` 450 帧完成；meta 写入 `sr_input=2` / `model=realistic`。
+- 任务中心 HQ 模型：再建 **模型档位=高质量** 任务，`model=realistic_hq`（x4plus），450 帧完成；两次任务均为新增验证任务（`task-1792896344-0` / `task-1792896650-0`）。
 - 既有用户任务目录（包括 `task-1792330123-0`）未删除、未改写。
 
 ## 打包/运行要求
