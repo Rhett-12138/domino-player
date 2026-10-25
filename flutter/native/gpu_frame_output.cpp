@@ -133,6 +133,20 @@ float4 ps_blur_h(VSOut i) : SV_Target
     return c;
 }
 
+Texture2D<float> texR : register(t0);
+Texture2D<float> texG : register(t1);
+Texture2D<float> texB : register(t2);
+
+// 零拷贝路径：TensorRT 的 FP16 NCHW 三个平面由 CUDA 直写纹理，
+// 这里只做 GPU 采样/最终 BGRA 上屏（美颜路径仍走 CPU/ps_final）。
+float4 ps_gpu(VSOut i) : SV_Target
+{
+    float r = texR.Sample(samp, i.uv);
+    float g = texG.Sample(samp, i.uv);
+    float b = texB.Sample(samp, i.uv);
+    return float4(r, g, b, 1.0);
+}
+
 float4 ps_final(VSOut i) : SV_Target
 {
     float4 c = tex0.Sample(samp, i.uv);
@@ -178,6 +192,14 @@ struct OutTex {
   FlutterDesktopGpuSurfaceDescriptor desc = {};
 };
 
+// 零拷贝输入：3 个 R16_FLOAT 平面纹理；CUDA 直写，D3D shader 采样。
+struct GpuInSlot {
+  ComPtr<ID3D11Texture2D> tex[3];
+  ComPtr<ID3D11ShaderResourceView> srv[3];
+  int w = 0, h = 0;
+  bool busy = false;
+};
+
 }  // namespace
 
 struct GpuFrameOutput::Impl {
@@ -194,6 +216,7 @@ struct GpuFrameOutput::Impl {
   ComPtr<ID3D11VertexShader> vs;
   ComPtr<ID3D11PixelShader> psBlur;
   ComPtr<ID3D11PixelShader> psFinal;
+  ComPtr<ID3D11PixelShader> psGpu;
   ComPtr<ID3D11Buffer> cb;
   ComPtr<ID3D11SamplerState> sampler;
   ComPtr<ID3D11Query> syncQuery;
@@ -207,6 +230,7 @@ struct GpuFrameOutput::Impl {
   ComPtr<ID3D11RenderTargetView> tempRtv;
   ComPtr<ID3D11ShaderResourceView> tempSrv;
   std::deque<OutTex> outs;   // 已发布的 descriptor 不随 resize 失效
+  std::vector<GpuInSlot> gpuIns;
 
   int w = 0, h = 0;
   int front = -1;
@@ -216,13 +240,17 @@ struct GpuFrameOutput::Impl {
   EngineBeautyParams bp;
   std::atomic<bool> newFrame{ false };
   std::mutex mu;
+  std::mutex copyMu;   // cudart 写入 ↔ D3D 采样
+  std::atomic<bool> fatal{ false };
 
   std::vector<uint8_t> smallRgb;
   EngineFrameOutput previewGen;
 
   bool init();
   bool ensureSize(int width, int height);
+  bool ensureGpuSlots(int width, int height);
   bool render(const uint8_t* rgb, int width, int height, int outIdx);
+  bool renderGpu(int slot, int width, int height, int outIdx);
   bool compile(const char* entry, const char* target, ComPtr<ID3DBlob>& blob);
   void releaseInputTemp();
 };
@@ -244,22 +272,44 @@ bool GpuFrameOutput::Impl::init() {
   UINT flags = D3D11_CREATE_DEVICE_BGRA_SUPPORT;
   D3D_FEATURE_LEVEL levels[] = { D3D_FEATURE_LEVEL_11_0, D3D_FEATURE_LEVEL_10_1, D3D_FEATURE_LEVEL_10_0 };
   D3D_FEATURE_LEVEL got = D3D_FEATURE_LEVEL_11_0;
-  HRESULT hr = D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, flags,
-                                 levels, 3, D3D11_SDK_VERSION, &device, &got, &ctx);
+  // zero-copy 需要 D3D11 设备与 TensorRT 在同一块 NVIDIA GPU 上；默认 adapter
+  // 在双显卡机器可能是核显。默认强制 NVIDIA 才能启用 cudart 互操作；混合显卡
+  // 若 Flutter 无法打开 legacy shared handle，可用 DOMINO_D3D_ADAPTER=default
+  // 退回默认 adapter（零拷贝自动降级为 CPU，但显示链路保持原生）。
+  ComPtr<IDXGIAdapter1> nvAdapter;
+  ComPtr<IDXGIFactory1> factory;
+  const char* adapterMode = getenv("DOMINO_D3D_ADAPTER");
+  const bool preferDefault = adapterMode && strcmp(adapterMode, "default") == 0;
+  if (!preferDefault && SUCCEEDED(CreateDXGIFactory1(IID_PPV_ARGS(&factory)))) {
+    for (UINT i = 0;; i++) {
+      ComPtr<IDXGIAdapter1> ad;
+      if (factory->EnumAdapters1(i, &ad) == DXGI_ERROR_NOT_FOUND) break;
+      DXGI_ADAPTER_DESC1 desc = {};
+      if (SUCCEEDED(ad->GetDesc1(&desc)) && desc.VendorId == 0x10DE) {
+        nvAdapter = ad;
+        break;
+      }
+    }
+  }
+  HRESULT hr = D3D11CreateDevice(
+      nvAdapter.Get(), nvAdapter ? D3D_DRIVER_TYPE_UNKNOWN : D3D_DRIVER_TYPE_HARDWARE,
+      nullptr, flags, levels, 3, D3D11_SDK_VERSION, &device, &got, &ctx);
   if (FAILED(hr) || !device || !ctx) {
     logx::warn("gpu beauty: D3D11CreateDevice failed 0x%08x", (unsigned)hr);
     return false;
   }
 
-  ComPtr<ID3DBlob> vsBlob, psBlurBlob, psFinalBlob;
+  ComPtr<ID3DBlob> vsBlob, psBlurBlob, psFinalBlob, psGpuBlob;
   if (!compile("vs_main", "vs_5_0", vsBlob) ||
       !compile("ps_blur_h", "ps_5_0", psBlurBlob) ||
-      !compile("ps_final", "ps_5_0", psFinalBlob)) {
+      !compile("ps_final", "ps_5_0", psFinalBlob) ||
+      !compile("ps_gpu", "ps_5_0", psGpuBlob)) {
     return false;
   }
   if (FAILED(device->CreateVertexShader(vsBlob->GetBufferPointer(), vsBlob->GetBufferSize(), nullptr, &vs)) ||
       FAILED(device->CreatePixelShader(psBlurBlob->GetBufferPointer(), psBlurBlob->GetBufferSize(), nullptr, &psBlur)) ||
-      FAILED(device->CreatePixelShader(psFinalBlob->GetBufferPointer(), psFinalBlob->GetBufferSize(), nullptr, &psFinal))) {
+      FAILED(device->CreatePixelShader(psFinalBlob->GetBufferPointer(), psFinalBlob->GetBufferSize(), nullptr, &psFinal)) ||
+      FAILED(device->CreatePixelShader(psGpuBlob->GetBufferPointer(), psGpuBlob->GetBufferSize(), nullptr, &psGpu))) {
     logx::error("gpu beauty: CreateShader failed");
     return false;
   }
@@ -380,6 +430,45 @@ bool GpuFrameOutput::Impl::ensureSize(int width, int height) {
   }
   for (auto& o : fresh) outs.push_back(std::move(o));
   front = -1;
+  return true;
+}
+
+bool GpuFrameOutput::Impl::ensureGpuSlots(int width, int height) {
+  if (width <= 0 || height <= 0) return false;
+  std::lock_guard<std::mutex> lk(mu);
+  if (gpuIns.size() == 2 && gpuIns[0].w == width && gpuIns[0].h == height) {
+    return true;
+  }
+  for (auto& s : gpuIns) {
+    if (s.busy) return false;
+  }
+  gpuIns.clear();
+  D3D11_TEXTURE2D_DESC d = {};
+  d.Width = (UINT)width;
+  d.Height = (UINT)height;
+  d.MipLevels = 1;
+  d.ArraySize = 1;
+  d.Format = DXGI_FORMAT_R16_FLOAT;
+  d.SampleDesc.Count = 1;
+  d.Usage = D3D11_USAGE_DEFAULT;
+  d.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+  // D3D11_RESOURCE_MISC_SHARED 是 cudart 跨 API 写纹理的稳定条件；去掉后
+  // 多 slot 并发在 nvwgf2umx 里会偶发 fail-fast（c0000409）。
+  d.MiscFlags = D3D11_RESOURCE_MISC_SHARED;
+  gpuIns.resize(2);
+  for (auto& s : gpuIns) {
+    s.w = width;
+    s.h = height;
+    s.busy = false;
+    for (int i = 0; i < 3; i++) {
+      if (FAILED(device->CreateTexture2D(&d, nullptr, &s.tex[i])) ||
+          FAILED(device->CreateShaderResourceView(s.tex[i].Get(), nullptr, &s.srv[i]))) {
+        logx::error("gpu zero-copy: create R16 texture failed");
+        gpuIns.clear();
+        return false;
+      }
+    }
+  }
   return true;
 }
 
@@ -514,6 +603,56 @@ bool GpuFrameOutput::Impl::render(const uint8_t* rgb, int width, int height, int
   return true;
 }
 
+bool GpuFrameOutput::Impl::renderGpu(int slot, int width, int height, int outIdx) {
+  // Draw/query 期间必须挡住 acquire/ensureGpuSlots；否则跨 API 纹理可能在采样中
+  // 被重建，实测会导致 query 永不完成或 nvwgf2umx fail-fast。
+  std::lock_guard<std::mutex> lk(mu);
+  if (slot < 0 || slot >= (int)gpuIns.size()) return false;
+  GpuInSlot& in = gpuIns[(size_t)slot];
+  if (!in.tex[0] || in.w != width || in.h != height) return false;
+
+  // 上一轮 D3D 提交可能在驱动队列中；CUDART 写入的是同一批纹理，
+  // 先 flush 再采样，避免跨 API 资源状态竞争。
+  ctx->Flush();
+  D3D11_VIEWPORT vp = { 0.f, 0.f, (float)width, (float)height, 0.f, 1.f };
+  ctx->RSSetViewports(1, &vp);
+  ctx->IASetInputLayout(nullptr);
+  ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+  ctx->VSSetShader(vs.Get(), nullptr, 0);
+  ctx->PSSetShader(psGpu.Get(), nullptr, 0);
+  ctx->PSSetSamplers(0, 1, sampler.GetAddressOf());
+  ID3D11ShaderResourceView* srvs[3] = { in.srv[0].Get(), in.srv[1].Get(), in.srv[2].Get() };
+  ctx->PSSetShaderResources(0, 3, srvs);
+  ID3D11RenderTargetView* rt = outs[(size_t)outIdx].rtv.Get();
+  ctx->OMSetRenderTargets(1, &rt, nullptr);
+  ctx->Draw(3, 0);
+  ID3D11ShaderResourceView* nullSrvs[3] = { nullptr, nullptr, nullptr };
+  ctx->PSSetShaderResources(0, 3, nullSrvs);
+  ctx->OMSetRenderTargets(0, nullptr, nullptr);
+
+  ctx->End(syncQuery.Get());
+  ctx->Flush();
+  bool done = false;
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(250);
+  while (std::chrono::steady_clock::now() < deadline) {
+    HRESULT qhr = ctx->GetData(syncQuery.Get(), nullptr, 0, 0);
+    if (qhr == S_OK) { done = true; break; }
+    if (FAILED(qhr)) break;
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  if (!done) {
+    // 查询未完成时 GPU 可能仍在采样这三张纹理，不能归还 slot。
+    logx::error("gpu zero-copy: present query timeout");
+    fatal.store(true);
+    syncQuery.Reset();
+    D3D11_QUERY_DESC qd = {};
+    qd.Query = D3D11_QUERY_EVENT;
+    if (FAILED(device->CreateQuery(&qd, &syncQuery))) fatal.store(true);
+    return false;
+  }
+  return true;
+}
+
 void GpuFrameOutput::Impl::release(void* p) {
   auto* c = (ReleaseCtx*)p;
   if (!c) return;
@@ -573,7 +712,10 @@ void GpuFrameOutput::presentFrame(const uint8_t* rgb, int w, int h) {
     }
   }
   if (idx < 0) return;   // All shared textures are held by Flutter; drop this frame.
-  if (!impl_->render(rgb, w, h, idx)) {
+  impl_->copyMu.lock();
+  const bool rendered = impl_->render(rgb, w, h, idx);
+  impl_->copyMu.unlock();
+  if (!rendered) {
     std::lock_guard<std::mutex> lk(impl_->mu);
     impl_->outs[(size_t)idx].busy = false;
     return;
@@ -595,6 +737,98 @@ void GpuFrameOutput::presentFrame(const uint8_t* rgb, int w, int h) {
     o.desc.release_context = nullptr;
     impl_->newFrame.store(true);
   }
+}
+
+bool GpuFrameOutput::acquireGpuSrFrame(int w, int h, int& slot, void* textures[3]) {
+  if (!impl_ || !impl_->ok || !textures || w <= 0 || h <= 0) return false;
+  if (!impl_->ensureGpuSlots(w, h)) return false;
+  std::lock_guard<std::mutex> lk(impl_->mu);
+  for (int i = 0; i < (int)impl_->gpuIns.size(); i++) {
+    auto& s = impl_->gpuIns[(size_t)i];
+    if (s.w == w && s.h == h && !s.busy) {
+      s.busy = true;
+      slot = i;
+      for (int j = 0; j < 3; j++) textures[j] = s.tex[j].Get();
+      return true;
+    }
+  }
+  return false;
+}
+
+void GpuFrameOutput::releaseGpuSrFrame(int slot) {
+  if (!impl_ || slot < 0) return;
+  std::lock_guard<std::mutex> lk(impl_->mu);
+  if (slot < (int)impl_->gpuIns.size()) impl_->gpuIns[(size_t)slot].busy = false;
+}
+
+void GpuFrameOutput::lockGpuCopy() {
+  if (impl_) impl_->copyMu.lock();
+}
+
+void GpuFrameOutput::unlockGpuCopy() {
+  if (impl_) impl_->copyMu.unlock();
+}
+
+bool GpuFrameOutput::gpuFatal() const {
+  return impl_ && impl_->fatal.load();
+}
+
+bool GpuFrameOutput::presentGpuSrFrame(int slot, int w, int h) {
+  if (!impl_ || !impl_->ok || w <= 0 || h <= 0) return false;
+  {
+    std::lock_guard<std::mutex> lk(impl_->mu);
+    if (slot < 0 || slot >= (int)impl_->gpuIns.size()) return false;
+  }
+  if (!impl_->ensureSize(w, h)) {
+    releaseGpuSrFrame(slot);
+    return false;
+  }
+  int idx = -1;
+  {
+    std::lock_guard<std::mutex> lk(impl_->mu);
+    for (int i = 0; i < (int)impl_->outs.size(); i++) {
+      auto& o = impl_->outs[(size_t)i];
+      if (o.texW == w && o.texH == h && i != impl_->front && !o.busy && !o.inUse) {
+        idx = i;
+        o.busy = true;
+        break;
+      }
+    }
+  }
+  if (idx < 0) {
+    releaseGpuSrFrame(slot);
+    return false;
+  }
+  impl_->copyMu.lock();
+  const bool rendered = impl_->renderGpu(slot, w, h, idx);
+  impl_->copyMu.unlock();
+  if (!rendered) {
+    std::lock_guard<std::mutex> lk(impl_->mu);
+    impl_->outs[(size_t)idx].busy = false;
+    // fatal（query 超时）时 GPU 可能还在采样，slot 保持 busy，交给 CPU 回退。
+    if (!impl_->fatal.load() && slot < (int)impl_->gpuIns.size()) {
+      impl_->gpuIns[(size_t)slot].busy = false;
+    }
+    return false;
+  }
+  {
+    std::lock_guard<std::mutex> lk(impl_->mu);
+    auto& o = impl_->outs[(size_t)idx];
+    o.busy = false;
+    if (slot < (int)impl_->gpuIns.size()) impl_->gpuIns[(size_t)slot].busy = false;
+    impl_->front = idx;
+    o.desc.struct_size = sizeof(FlutterDesktopGpuSurfaceDescriptor);
+    o.desc.handle = o.handle;
+    o.desc.width = (size_t)w;
+    o.desc.height = (size_t)h;
+    o.desc.visible_width = (size_t)w;
+    o.desc.visible_height = (size_t)h;
+    o.desc.format = kFlutterDesktopPixelFormatBGRA8888;
+    o.desc.release_callback = Impl::release;
+    o.desc.release_context = nullptr;
+    impl_->newFrame.store(true);
+  }
+  return true;
 }
 
 bool GpuFrameOutput::hasNewFrame() const { return impl_ && impl_->newFrame.load(); }

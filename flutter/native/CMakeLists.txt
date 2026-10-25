@@ -24,6 +24,7 @@ add_library(domino_engine SHARED
   ${ENGINE_SRC}/task.cpp
   ${ENGINE_SRC}/sr.cpp
   ${ENGINE_SRC}/trt_sr.cpp
+  ${ENGINE_SRC}/trt/gpu_interop.cpp
   ${ENGINE_SRC}/frame_output.cpp
   ${ENGINE_SRC}/player.cpp
   ${ENGINE_SRC}/audio.cpp
@@ -93,6 +94,14 @@ if (DOMINO_HAS_TRT_RTX)
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
       ${DOMINO_TRT_RTX_ROOT}/bin/tensorrt_rtx_1_7.dll
       ${DOMINO_TRT_RTX_ROOT}/bin/tensorrt_onnxparser_rtx_1_7.dll
+      $<TARGET_FILE_DIR:domino_engine>
+  )
+endif()
+# 可选零拷贝：cudart 缺失时 CudaD3D11Interop 自动回退 CPU 路径。
+if (EXISTS "${REPO_ROOT}/libs/cuda-runtime/bin/cudart64_12.dll")
+  add_custom_command(TARGET domino_engine POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+      ${REPO_ROOT}/libs/cuda-runtime/bin/cudart64_12.dll
       $<TARGET_FILE_DIR:domino_engine>
   )
 endif()

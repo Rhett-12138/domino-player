@@ -25,6 +25,7 @@ add_library(domino_core STATIC
   src/task.cpp
   src/sr.cpp
   src/trt_sr.cpp
+  src/trt/gpu_interop.cpp
   src/frame_output.cpp
 )
 target_include_directories(domino_core PUBLIC src)

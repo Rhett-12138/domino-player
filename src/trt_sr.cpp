@@ -18,10 +18,12 @@
 #endif
 #include <windows.h>
 #include <intrin.h>
+#include "engine.h"
 #include <NvInfer.h>
 #include <NvOnnxParser.h>
 #include <cuda_runtime_api.h>
 #include "convert_avx2.h"
+#include "trt/gpu_interop.h"
 
 extern "C" {
 #include <libswscale/swscale.h>
@@ -169,6 +171,7 @@ std::mutex g_buildMu;
 
 struct TensorRtSR::Impl {
   Driver drv;
+  CudaD3D11Interop gpuInterop;
   TrtLogger logger;
   nvinfer1::IRuntime* runtime = nullptr;
   nvinfer1::ICudaEngine* engine = nullptr;
@@ -188,6 +191,7 @@ struct TensorRtSR::Impl {
   bool ready = false;
   SwsContext* sws = nullptr;
   int swsW = 0, swsH = 0, swsOutW = 0, swsOutH = 0;
+  bool swsFast = false;
   std::vector<uint8_t> resized;
   uint16_t* hostIn = nullptr;
   uint16_t* hostOut = nullptr;
@@ -220,6 +224,112 @@ struct TensorRtSR::Impl {
       dOut = 0;
       if (drv.memAlloc(&dOut, outBytes) != 0) return false;
       dOutBytes = outBytes;
+    }
+    return true;
+  }
+
+  bool fitInput(int srcW, int srcH, int reqW, int& fitW, int& fitH) const {
+    if (srcW <= 0 || srcH <= 0 || reqW <= 1 || maxInW <= 0 || maxInH <= 0) return false;
+    fitW = std::min(reqW, maxInW);
+    fitH = (int)(((int64_t)srcH * fitW / srcW) & ~1);
+    if (fitH > maxInH) {
+      fitH = maxInH;
+      fitW = (int)(((int64_t)srcW * fitH / srcH) & ~1);
+    }
+    if (fitW > maxInW) {
+      fitW = maxInW;
+      fitH = (int)(((int64_t)srcH * fitW / srcW) & ~1);
+    }
+    if (fitW < minInW || fitH < minInH) {
+      fitW = std::max(fitW, minInW);
+      fitH = (int)(((int64_t)srcH * fitW / srcW) & ~1);
+      if (fitH < minInH) {
+        fitH = minInH;
+        fitW = (int)(((int64_t)srcW * fitH / srcH) & ~1);
+      }
+    }
+    return fitW >= 2 && fitH >= 2 && fitW <= maxInW && fitH <= maxInH;
+  }
+
+  // RGB24 -> FP16 NCHW H2D -> TensorRT。结束后 dOut 是可读的 FP16 NCHW。
+  bool infer(const uint8_t* rgb, int w, int h, int reqW, int& outW, int& outH,
+             bool fastResize = false) {
+    if (drv.ctxSet(cuCtx) != 0) return false;
+    const auto tStart = std::chrono::steady_clock::now();
+    int fitW = 0, fitH = 0;
+    if (!fitInput(w, h, reqW, fitW, fitH)) return false;
+    const int inW = fitW;
+    const int inH = fitH;
+
+    const uint8_t* src = rgb;
+    if (w != inW || h != inH) {
+      if (swsW != w || swsH != h || swsOutW != inW || swsOutH != inH ||
+          swsFast != fastResize) {
+        clearSws();
+        sws = sws_getContext(w, h, AV_PIX_FMT_RGB24, inW, inH, AV_PIX_FMT_RGB24,
+                             fastResize ? SWS_FAST_BILINEAR : SWS_BILINEAR,
+                             nullptr, nullptr, nullptr);
+        if (!sws) return false;
+        swsW = w; swsH = h; swsOutW = inW; swsOutH = inH;
+        swsFast = fastResize;
+      }
+      resized.resize((size_t)inW * inH * 3);
+      uint8_t* dst[1] = { resized.data() };
+      const uint8_t* srcPlane[1] = { rgb };
+      int srcStride[1] = { w * 3 };
+      int dstStride[1] = { inW * 3 };
+      sws_scale(sws, srcPlane, srcStride, 0, h, dst, dstStride);
+      src = resized.data();
+    }
+    const auto tResize = std::chrono::steady_clock::now();
+
+    const size_t inBytes = (size_t)3 * inW * inH * 2;
+    if (inBytes > hostInBytes) return false;
+    const size_t plane = (size_t)inW * inH;
+    if (cpuHasAvx2F16c()) {
+      trtRgb24ToHalfPlanarAvx2(src, inW, inH, hostIn, hostIn + plane,
+                               hostIn + 2 * plane);
+    } else {
+      for (int y = 0; y < inH; y++) {
+        const uint8_t* row = src + (size_t)y * inW * 3;
+        uint16_t* r = hostIn + (size_t)y * inW;
+        uint16_t* g = hostIn + plane + (size_t)y * inW;
+        uint16_t* b = hostIn + 2 * plane + (size_t)y * inW;
+        for (int x = 0; x < inW; x++) {
+          r[x] = lut[row[x * 3 + 0]];
+          g[x] = lut[row[x * 3 + 1]];
+          b[x] = lut[row[x * 3 + 2]];
+        }
+      }
+    }
+    const auto tConvert = std::chrono::steady_clock::now();
+
+    if (!ensureDevice(inBytes, dOutBytes)) return false;
+    if (drv.h2dAsync(dIn, hostIn, inBytes, stream) != 0) return false;
+    if (!ctx->setInputShape("input", nvinfer1::Dims4{1, 3, inH, inW})) return false;
+    nvinfer1::Dims od = ctx->getTensorShape("output");
+    if (od.nbDims != 4 || od.d[0] != 1 || od.d[1] != 3 ||
+        od.d[2] <= 0 || od.d[3] <= 0 || od.d[2] % 4 != 0 || od.d[3] % 4 != 0) {
+      return false;
+    }
+    outW = (int)od.d[3];
+    outH = (int)od.d[2];
+    const size_t outBytes = (size_t)3 * outW * outH * 2;
+    if (!ensureDevice(inBytes, outBytes)) return false;
+    if (!ctx->setTensorAddress("input", (void*)(uintptr_t)dIn) ||
+        !ctx->setTensorAddress("output", (void*)(uintptr_t)dOut)) {
+      return false;
+    }
+    const auto tInferStart = std::chrono::steady_clock::now();
+    if (!ctx->enqueueV3((cudaStream_t)stream)) return false;
+    if (drv.streamSync(stream) != 0) return false;
+    if (const char* p = getenv("DOMINO_TRT_PROFILE_STAGES"); p && *p && *p != '0') {
+      const auto tEnd = std::chrono::steady_clock::now();
+      fprintf(stderr, "[trt-stage] resize=%.2f convert=%.2f h2d=%.2f infer=%.2f\n",
+              std::chrono::duration<double, std::milli>(tResize - tStart).count(),
+              std::chrono::duration<double, std::milli>(tConvert - tResize).count(),
+              std::chrono::duration<double, std::milli>(tInferStart - tConvert).count(),
+              std::chrono::duration<double, std::milli>(tEnd - tInferStart).count());
     }
     return true;
   }
@@ -303,12 +413,14 @@ struct TensorRtSR::Impl {
   void clearSws() {
     if (sws) { sws_freeContext(sws); sws = nullptr; }
     swsW = swsH = swsOutW = swsOutH = 0;
+    swsFast = false;
   }
 
   void reset() {
     ready = false;
-    clearSws();
     if (cuCtx && drv.ctxSet) drv.ctxSet(cuCtx);
+    gpuInterop.shutdown();
+    clearSws();
     if (ctx) { delete ctx; ctx = nullptr; }
     if (engine) { delete engine; engine = nullptr; }
     if (runtime) { delete runtime; runtime = nullptr; }
@@ -397,99 +509,17 @@ int TensorRtSR::process(const uint8_t* rgb, int w, int h, int inW,
   if (!impl_ || !impl_->ready || !rgb || w <= 0 || h <= 0 || inW <= 1) return -1;
   Impl& m = *impl_;
   const auto profileT0 = std::chrono::steady_clock::now();
-  if (m.drv.ctxSet(m.cuCtx) != 0) return -1;
-  // 动态 profile 覆盖常见横屏；竖屏/超宽/小目标按源比例双向夹取，
-  // 避免 inH 超上限直接关闭 SR 或让离线任务判失败。
-  int fitW = std::min(inW, m.maxInW);
-  int fitH = (int)(((int64_t)h * fitW / w) & ~1);
-  if (fitH > m.maxInH) {
-    fitH = m.maxInH;
-    fitW = (int)(((int64_t)w * fitH / h) & ~1);
-  }
-  if (fitW > m.maxInW) {
-    fitW = m.maxInW;
-    fitH = (int)(((int64_t)h * fitW / w) & ~1);
-  }
-  if (fitW < m.minInW || fitH < m.minInH) {
-    fitW = std::max(fitW, m.minInW);
-    fitH = (int)(((int64_t)h * fitW / w) & ~1);
-    if (fitH < m.minInH) {
-      fitH = m.minInH;
-      fitW = (int)(((int64_t)w * fitH / h) & ~1);
-    }
-  }
-  if (fitW < 2 || fitH < 2 || fitW > m.maxInW || fitH > m.maxInH) return -1;
-  inW = fitW;
-  const int inH = fitH;
-
-  const uint8_t* src = rgb;
-  if (w != inW || h != inH) {
-    if (m.swsW != w || m.swsH != h || m.swsOutW != inW || m.swsOutH != inH) {
-      m.clearSws();
-      m.sws = sws_getContext(w, h, AV_PIX_FMT_RGB24, inW, inH, AV_PIX_FMT_RGB24,
-                             SWS_BILINEAR, nullptr, nullptr, nullptr);
-      if (!m.sws) return -1;
-      m.swsW = w; m.swsH = h; m.swsOutW = inW; m.swsOutH = inH;
-    }
-    m.resized.resize((size_t)inW * inH * 3);
-    uint8_t* dst[1] = { m.resized.data() };
-    const uint8_t* srcPlane[1] = { rgb };
-    int srcStride[1] = { w * 3 };
-    int dstStride[1] = { inW * 3 };
-    sws_scale(m.sws, srcPlane, srcStride, 0, h, dst, dstStride);
-    src = m.resized.data();
-  }
-
-  const size_t inElems = (size_t)3 * inW * inH;
-  const size_t inBytes = inElems * 2;
-  if (inBytes > m.hostInBytes) return -1;
-  const size_t plane = (size_t)inW * inH;
-  for (int y = 0; y < inH; y++) {
-    const uint8_t* row = src + (size_t)y * inW * 3;
-    uint16_t* r = m.hostIn + (size_t)y * inW;
-    uint16_t* g = m.hostIn + plane + (size_t)y * inW;
-    uint16_t* b = m.hostIn + 2 * plane + (size_t)y * inW;
-    for (int x = 0; x < inW; x++) {
-      r[x] = m.lut[row[x * 3 + 0]];
-      g[x] = m.lut[row[x * 3 + 1]];
-      b[x] = m.lut[row[x * 3 + 2]];
-    }
-  }
-
-  if (!m.ensureDevice(inBytes, m.dOutBytes)) return -1;
-  if (m.drv.h2dAsync(m.dIn, m.hostIn, inBytes, m.stream) != 0) return -1;
-  if (!m.ctx->setInputShape("input", nvinfer1::Dims4{1, 3, inH, inW})) return -1;
-  nvinfer1::Dims od = m.ctx->getTensorShape("output");
-  if (od.nbDims != 4 || od.d[0] != 1 || od.d[1] != 3 ||
-      od.d[2] <= 0 || od.d[3] <= 0 || od.d[2] % 4 != 0 || od.d[3] % 4 != 0) {
-    return -1;
-  }
-  const int outW = (int)od.d[3];
-  const int outH = (int)od.d[2];
-  const size_t outElems = (size_t)3 * outW * outH;
-  const size_t outBytes = outElems * 2;
-  if (!m.ensureDevice(inBytes, outBytes)) return -1;
-  if (!m.ctx->setTensorAddress("input", (void*)(uintptr_t)m.dIn) ||
-      !m.ctx->setTensorAddress("output", (void*)(uintptr_t)m.dOut)) {
-    return -1;
-  }
-  if (!m.ctx->enqueueV3((cudaStream_t)m.stream)) return -1;
+  int outW = 0, outH = 0;
+  if (!m.infer(rgb, w, h, inW, outW, outH)) return -1;
+  const auto tInfer = std::chrono::steady_clock::now();
+  const size_t outBytes = (size_t)3 * outW * outH * 2;
   if (outBytes > m.hostOutBytes) return -1;
+  if (m.drv.d2h(m.hostOut, m.dOut, outBytes) != 0) return -1;
+  const auto tD2H = std::chrono::steady_clock::now();
   const bool stageProfile = [] {
     const char* p = getenv("DOMINO_TRT_PROFILE_STAGES");
     return p && *p && *p != '0';
   }();
-  auto tInfer = std::chrono::steady_clock::now();
-  auto tD2H = tInfer;
-  if (stageProfile) {
-    if (m.drv.streamSync(m.stream) != 0) return -1;
-    tInfer = std::chrono::steady_clock::now();
-    if (m.drv.d2h(m.hostOut, m.dOut, outBytes) != 0) return -1;
-    tD2H = std::chrono::steady_clock::now();
-  } else {
-    if (m.drv.d2hAsync(m.hostOut, m.dOut, outBytes, m.stream) != 0) return -1;
-    if (m.drv.streamSync(m.stream) != 0) return -1;
-  }
 
   outRgb.resize((size_t)outW * outH * 3);
   const uint16_t* planes[3] = {
@@ -522,7 +552,7 @@ int TensorRtSR::process(const uint8_t* rgb, int w, int h, int inW,
   if (cpuHasAvx2F16c()) convertRows = convertRowsAvx2;
   else convertRows = convertRowsScalar;
   int threads = (int)std::thread::hardware_concurrency();
-  threads = std::max(1, std::min(12, threads));
+  threads = (std::max)(1, (std::min)(12, threads));
   if ((size_t)outW * outH < 200000) threads = 1;
   if (threads <= 1) {
     convertRows(0, outH);
@@ -536,6 +566,7 @@ int TensorRtSR::process(const uint8_t* rgb, int w, int h, int inW,
   if (const char* profile = getenv("DOMINO_TRT_PROFILE")) {
     if (*profile && *profile != '0') {
       const auto t1 = std::chrono::steady_clock::now();
+      const int inH = m.scale > 0 ? outH / m.scale : 0;
       fprintf(stderr, "[trt] %dx%d -> %dx%d total=%.2fms",
               inW, inH, outW, outH,
               std::chrono::duration<double, std::milli>(t1 - profileT0).count());
@@ -551,6 +582,49 @@ int TensorRtSR::process(const uint8_t* rgb, int w, int h, int inW,
   return outW;
 }
 
+bool TensorRtSR::outputSize(int srcW, int srcH, int inW, int& outW, int& outH) const {
+  if (!impl_ || !impl_->ready) return false;
+  int fitW = 0, fitH = 0;
+  if (!impl_->fitInput(srcW, srcH, inW, fitW, fitH)) return false;
+  outW = fitW * impl_->scale;
+  outH = fitH * impl_->scale;
+  return true;
+}
+
+int TensorRtSR::processGpu(const uint8_t* rgb, int w, int h, int inW, int slot,
+                           void* textures[3], IGpuFrameSink* lockSink) {
+  if (!impl_ || !impl_->ready || !rgb || !textures || w <= 0 || h <= 0 || inW <= 1) {
+    return -1;
+  }
+  Impl& m = *impl_;
+  const auto t0 = std::chrono::steady_clock::now();
+  int outW = 0, outH = 0;
+  if (!m.infer(rgb, w, h, inW, outW, outH, true)) return -1;
+  const auto tInfer = std::chrono::steady_clock::now();
+  if (lockSink) lockSink->lockGpuCopy();
+  const bool copied = m.gpuInterop.copyToTextures(
+      (const void*)(uintptr_t)m.dOut, slot, outW, outH, textures);
+  if (lockSink) lockSink->unlockGpuCopy();
+  if (!copied) return -1;
+  if (const char* profile = getenv("DOMINO_TRT_PROFILE")) {
+    if (*profile && *profile != '0') {
+      const auto t1 = std::chrono::steady_clock::now();
+      fprintf(stderr, "[trt-gpu] %dx%d -> %dx%d infer=%.2fms copy=%.2fms total=%.2fms\n",
+              inW, (int)((int64_t)h * inW / w), outW, outH,
+              std::chrono::duration<double, std::milli>(tInfer - t0).count(),
+              std::chrono::duration<double, std::milli>(t1 - tInfer).count(),
+              std::chrono::duration<double, std::milli>(t1 - t0).count());
+    }
+  }
+  return outW;
+}
+
+void TensorRtSR::resetGpuInterop() {
+  if (!impl_) return;
+  if (impl_->cuCtx && impl_->drv.ctxSet) impl_->drv.ctxSet(impl_->cuCtx);
+  impl_->gpuInterop.reset();
+}
+
 void TensorRtSR::clear() {
   if (!impl_) return;
   impl_->reset();
@@ -564,6 +638,9 @@ TensorRtSR::~TensorRtSR() = default;
 bool TensorRtSR::ready() const { return false; }
 bool TensorRtSR::init(const char*, const char*, const char*, int, int, int) { return false; }
 int TensorRtSR::process(const uint8_t*, int, int, int, std::vector<uint8_t>&) { return -1; }
+bool TensorRtSR::outputSize(int, int, int, int&, int&) const { return false; }
+int TensorRtSR::processGpu(const uint8_t*, int, int, int, int, void*[3], IGpuFrameSink*) { return -1; }
+void TensorRtSR::resetGpuInterop() {}
 void TensorRtSR::clear() {}
 
 #endif

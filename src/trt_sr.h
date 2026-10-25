@@ -4,6 +4,8 @@
 #include <string>
 #include <vector>
 
+class IGpuFrameSink;
+
 // 可选 TensorRT-RTX 后端：仅用于真实 GPU，初始化失败时调用方回退 NCNN。
 // 内部使用 CUDA driver API（nvcuda.dll），不要求安装 CUDA Toolkit。
 class TensorRtSR {
@@ -22,6 +24,11 @@ public:
   // 失败返回 -1，调用方必须回退源帧。
   int process(const uint8_t* rgb, int w, int h, int inW,
               std::vector<uint8_t>& outRgb);
+  bool outputSize(int srcW, int srcH, int inW, int& outW, int& outH) const;
+  int processGpu(const uint8_t* rgb, int w, int h, int inW, int slot,
+                 void* textures[3], IGpuFrameSink* lockSink = nullptr);
+  // D3D 纹理尺寸/实例即将变化时，先注销 cudart 资源，避免 D3D 纹理先销毁。
+  void resetGpuInterop();
   void clear();
 
 private:

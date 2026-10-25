@@ -6,7 +6,7 @@
 #include <cmath>
 #include <algorithm>
 
-Player::Player(IFrameOutput& out) : out_(out) {
+Player::Player(IFrameOutput& out) : out_(out), gpuSink_(dynamic_cast<IGpuFrameSink*>(&out)) {
   audio_ = createDefaultAudioSink();   // 默认 WASAPI；可经 setAudioSink 注入其他实现
 }
 
@@ -20,8 +20,10 @@ void Player::shutdown() {
   vid_.close();
   aud_.close();
   clearVideoQueue();
+  dropPendingFrame();
   {
     std::lock_guard<std::mutex> lk(videoMu_);
+    pendingFrame_.rgb.clear();
     freeBufs_.clear();
   }
   currentPath_.clear();
@@ -121,6 +123,7 @@ void Player::ensureSR() {
 void Player::setNoSR(bool b) {
   noSR_.store(b);
   srFailed_.store(false);
+  if (!gpuSink_ || !gpuSink_->gpuFatal()) gpuSrDisabled_.store(false);
   if (b) {
     // 用户主动关闭：清掉档位与自动状态
     srCeilingW_.store(0);
@@ -130,6 +133,9 @@ void Player::setNoSR(bool b) {
   fpsLowSince_ = 0;
   autoCooldownUntil_ = 0;
   dropUntilPts_.store(0);
+  dropPendingFrame();
+  seekGen_.fetch_add(1);
+  clearVideoQueue();
   videoCv_.notify_all();
 }
 
@@ -139,11 +145,15 @@ void Player::setSRTarget(int presetIdx, int targetW) {
   srTargetW_.store(targetW);
   srAutoDegraded_.store(false);
   srFailed_.store(false);
+  if (!gpuSink_ || !gpuSink_->gpuFatal()) gpuSrDisabled_.store(false);
   if (targetW > 0) noSR_.store(false);
   // 手动重选档位 = 重新尝试；清掉自动降档的冷却/追帧
   fpsLowSince_ = 0;
   autoCooldownUntil_ = 0;
   dropUntilPts_.store(0);
+  dropPendingFrame();
+  seekGen_.fetch_add(1);
+  clearVideoQueue();
   videoCv_.notify_all();
 }
 
@@ -180,13 +190,10 @@ void Player::maybeAutoDegrade(double now) {
 
   // 追到当前媒体时钟，避免降档后仍保留之前的音画差
   const double clock = currentMediaClock();
-  if (havePending_) {
-    std::lock_guard<std::mutex> lk(videoMu_);
-    freeBufs_.push_back(std::move(pendingFrame_.rgb));
-    havePending_ = false;
-  }
+  dropPendingFrame();
   pendingPts_ = clock;
   dropUntilPts_.store((std::min)(clock, duration_ > 0 ? duration_ : clock));
+  seekGen_.fetch_add(1);   // 丢弃在途的旧档位帧，避免旧 gpuSlot 跨尺寸复用
   clearVideoQueue();
   videoCv_.notify_all();
 
@@ -210,6 +217,7 @@ bool Player::open(const std::string& path) {
   if (!vid_.open(path.c_str())) return false;
   currentPath_ = path;
   srFailed_.store(false);
+  if (!gpuSink_ || !gpuSink_->gpuFatal()) gpuSrDisabled_.store(false);
   srAutoDegraded_.store(false);
   fpsLowSince_ = 0;
   autoCooldownUntil_ = 0;
@@ -227,7 +235,8 @@ bool Player::open(const std::string& path) {
   seekPending_.store(false);
   eofSeek_ = false;
   seekTarget_ = 0;
-  havePending_ = false;
+  dropPendingFrame();
+  pendingFrame_.rgb.clear();
   pendingEOF_ = false;
   presentedFrames_ = 0;
   resetClockAnchors();
@@ -249,8 +258,10 @@ void Player::close() {
   vid_.close();
   aud_.close();
   clearVideoQueue();
+  dropPendingFrame();
   {
     std::lock_guard<std::mutex> lk(videoMu_);
+    pendingFrame_.rgb.clear();
     freeBufs_.clear();
   }
   currentPath_.clear();
@@ -286,7 +297,7 @@ void Player::seekInternal(double t) {
   autoCooldownUntil_ = 0;
   lastAutoCheck_ = 0;
   resetClockAnchors();
-  havePending_ = false;
+  dropPendingFrame();
   pendingEOF_ = false;
   // 视频 seek 交给 worker；generation 保证 seek 前在途帧被丢弃
   seekTargetVideo_.store(t);
@@ -294,17 +305,12 @@ void Player::seekInternal(double t) {
   seekReq_.store(true);
   dropUntilPts_.store(0);
   videoEof_.store(false);
-  {
-    std::lock_guard<std::mutex> lk(videoMu_);
-    if (!pendingFrame_.rgb.empty()) freeBufs_.push_back(std::move(pendingFrame_.rgb));
-  }
   clearVideoQueue();
   videoCv_.notify_all();
 }
 
 bool Player::processSeek() {
   if (!seekPending_.exchange(false)) return false;
-  havePending_ = false;
   pendingEOF_ = false;
   seekInternal(seekTarget_);
   presentedFrames_ = 0;
@@ -384,9 +390,29 @@ void Player::stopVideo() {
   if (videoThread_.joinable()) { videoThread_.join(); videoThread_ = std::thread(); }
 }
 
+void Player::releaseGpuFrame(VideoFrame& f) {
+  if (f.gpuSlot >= 0) {
+    if (gpuSink_) gpuSink_->releaseGpuSrFrame(f.gpuSlot);
+    f.gpuSlot = -1;
+  }
+}
+
+void Player::dropPendingFrame() {
+  if (!havePending_) return;
+  releaseGpuFrame(pendingFrame_);
+  if (!pendingFrame_.rgb.empty()) {
+    std::lock_guard<std::mutex> lk(videoMu_);
+    freeBufs_.push_back(std::move(pendingFrame_.rgb));
+  }
+  havePending_ = false;
+}
+
 void Player::clearVideoQueue() {
   std::lock_guard<std::mutex> lk(videoMu_);
-  for (auto& f : videoFrames_) freeBufs_.push_back(std::move(f.rgb));
+  for (auto& f : videoFrames_) {
+    releaseGpuFrame(f);
+    if (!f.rgb.empty()) freeBufs_.push_back(std::move(f.rgb));
+  }
   videoFrames_.clear();
 }
 
@@ -454,30 +480,67 @@ void Player::videoLoop() {
 
     if (needSR) {
       const int inW = inW_.load() > 0 ? inW_.load() : srTargetW_.load() / 4;
-      const int sw = useTrt_.load()
-        ? trt_.process(srcBuf_.data(), vid_.vw, vid_.vh, inW, f.rgb)
-        : sr_.process(srcBuf_.data(), vid_.vw, vid_.vh, inW, f.rgb);
-      if (sw > 0) {
-        f.w = sw;
-        f.h = (int)(f.rgb.size() / (size_t)sw / 3);
-      } else {
-        srFailed_.store(true);
-        f.rgb.assign(srcBuf_.data(), srcBuf_.data() + (size_t)vid_.vw * vid_.vh * 3);
-        f.w = vid_.vw;
-        f.h = vid_.vh;
+      bool gpuSr = false;
+      const bool noBeauty = !beautyActive_.load();
+      if (gpuSink_ && useTrt_.load() && !gpuSrDisabled_.load() && noBeauty) {
+        int outW = 0, outH = 0;
+        int slot = -1;
+        void* textures[3] = {};
+        if (trt_.outputSize(vid_.vw, vid_.vh, inW, outW, outH)) {
+          // 先注销旧 cudart 资源，再让 GpuFrameOutput 重建 D3D 纹理池。
+          if (outW != gpuSlotW_ || outH != gpuSlotH_) {
+            trt_.resetGpuInterop();
+            gpuSlotW_ = outW;
+            gpuSlotH_ = outH;
+          }
+        }
+        if (outW > 0 && outH > 0 &&
+            gpuSink_->acquireGpuSrFrame(outW, outH, slot, textures)) {
+          const int sw = trt_.processGpu(srcBuf_.data(), vid_.vw, vid_.vh, inW, slot,
+                                         textures, gpuSink_);
+          if (sw == outW && outW > 0 && outH > 0) {
+            f.gpuSlot = slot;
+            f.w = sw;
+            f.h = outH;
+            gpuSr = true;
+          } else {
+            gpuSink_->releaseGpuSrFrame(slot);
+            gpuSrDisabled_.store(true);
+            fprintf(stderr, "zero-copy: processGpu failed (size %d vs %d), fallback CPU\n",
+                    sw, outW);
+          }
+        }
+      }
+      if (!gpuSr) {
+        const int sw = useTrt_.load()
+          ? trt_.process(srcBuf_.data(), vid_.vw, vid_.vh, inW, f.rgb)
+          : sr_.process(srcBuf_.data(), vid_.vw, vid_.vh, inW, f.rgb);
+        if (sw > 0) {
+          f.w = sw;
+          f.h = (int)(f.rgb.size() / (size_t)sw / 3);
+        } else {
+          srFailed_.store(true);
+          f.rgb.assign(srcBuf_.data(), srcBuf_.data() + (size_t)vid_.vw * vid_.vh * 3);
+          f.w = vid_.vw;
+          f.h = vid_.vh;
+        }
       }
     } else {
       f.rgb.assign(srcBuf_.data(), srcBuf_.data() + (size_t)vid_.vw * vid_.vh * 3);
       f.w = vid_.vw;
       f.h = vid_.vh;
     }
-    if (seekGen_.load() != gen) continue;
+    if (seekGen_.load() != gen) {
+      releaseGpuFrame(f);
+      continue;
+    }
 
     // 解码/SR 期间 UI 可能刚设置停摆追帧目标：丢弃已过期帧（不发布）
     const double dropAfter = dropUntilPts_.load();
     if (dropAfter > 0 && pts + 0.10 < dropAfter) {
       std::lock_guard<std::mutex> lk(videoMu_);
-      freeBufs_.push_back(std::move(f.rgb));
+      releaseGpuFrame(f);
+      if (!f.rgb.empty()) freeBufs_.push_back(std::move(f.rgb));
       continue;
     }
 
@@ -486,7 +549,8 @@ void Player::videoLoop() {
       // 锁内再校验 generation：UI seek 会先 ++gen 再 clearVideoQueue，
       // 避免旧帧在 clear 之后被塞回队列。
       if (videoStop_.load() || seekGen_.load() != gen) {
-        freeBufs_.push_back(std::move(f.rgb));
+        releaseGpuFrame(f);
+        if (!f.rgb.empty()) freeBufs_.push_back(std::move(f.rgb));
         continue;
       }
       videoFrames_.push_back(std::move(f));
@@ -572,12 +636,24 @@ bool Player::readyToPresent() {
 bool Player::presentFrame() {
   srOutW_ = pendingFrame_.w;
   srOutH_ = pendingFrame_.h;
-  out_.presentFrame(pendingFrame_.rgb.data(), pendingFrame_.w, pendingFrame_.h);
+  if (pendingFrame_.gpuSlot >= 0) {
+    const int slot = pendingFrame_.gpuSlot;
+    // slot 的归还在 GpuFrameOutput::presentGpuSrFrame 内部完成（成功/可安全失败）。
+    if (gpuSink_ && !gpuSink_->presentGpuSrFrame(slot, pendingFrame_.w, pendingFrame_.h)) {
+      if (gpuSink_->gpuFatal()) {
+        gpuSrDisabled_.store(true);
+        fprintf(stderr, "zero-copy: present fatal, fallback CPU\n");
+      }
+    }
+    pendingFrame_.gpuSlot = -1;
+  } else {
+    out_.presentFrame(pendingFrame_.rgb.data(), pendingFrame_.w, pendingFrame_.h);
+  }
   playhead_ = pendingPts_;
   presentedFrames_++;
   havePending_ = false;
   // 帧缓冲回收到 worker，避免每帧分配大 vector
-  {
+  if (!pendingFrame_.rgb.empty()) {
     std::lock_guard<std::mutex> lk(videoMu_);
     freeBufs_.push_back(std::move(pendingFrame_.rgb));
   }
@@ -601,11 +677,7 @@ void Player::pump() {
   const double now = nowWall();
   if (lastPumpWall_ > 0 && now - lastPumpWall_ > 0.5) {
     // Ticker 停摆：让 worker 只解码、跳过 SR 追到当前媒体时钟；UI 不阻塞
-    if (havePending_) {
-      std::lock_guard<std::mutex> lk(videoMu_);
-      freeBufs_.push_back(std::move(pendingFrame_.rgb));
-      havePending_ = false;
-    }
+    dropPendingFrame();
     dropUntilPts_.store(currentMediaClock());
     clearVideoQueue();
     videoCv_.notify_all();

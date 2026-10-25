@@ -65,6 +65,14 @@ if (EXISTS "${REPO_ROOT}/libs/tensorrt-rtx/bin/tensorrt_rtx_1_7.dll")
       "$<TARGET_FILE_DIR:${BINARY_NAME}>"
   )
 endif()
+# 可选零拷贝依赖；缺失时 CudaD3D11Interop 会回退 CPU，不影响启动。
+if (EXISTS "${REPO_ROOT}/libs/cuda-runtime/bin/cudart64_12.dll")
+  add_custom_command(TARGET ${BINARY_NAME} POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+      "${REPO_ROOT}/libs/cuda-runtime/bin/cudart64_12.dll"
+      "$<TARGET_FILE_DIR:${BINARY_NAME}>"
+  )
+endif()
 # 超分模型拷到 exe 同目录（assets/models/sr/ncnn），运行时不依赖仓库路径
 add_custom_command(TARGET ${BINARY_NAME} POST_BUILD
   COMMAND ${CMAKE_COMMAND} -E copy_directory

@@ -55,3 +55,20 @@ public:
   // 前台每帧收尾：交换/上屏（引擎据此测 vsync）
   virtual void endPresent() = 0;
 };
+
+// 可选零拷贝视频输出。实现方负责 D3D11 纹理池与最终上屏；
+// 播放引擎只传不透明纹理指针，避免 core 依赖 D3D11 头/库。
+class IGpuFrameSink {
+public:
+  virtual ~IGpuFrameSink() = default;
+  // 获取 3 个 R16_FLOAT 平面纹理（ID3D11Texture2D*），供 TensorRT 输出直写。
+  virtual bool acquireGpuSrFrame(int w, int h, int& slot, void* textures[3]) = 0;
+  virtual void releaseGpuSrFrame(int slot) = 0;
+  // 把该 slot 的纹理经 D3D11 shader 呈现到 Flutter 共享纹理。
+  virtual bool presentGpuSrFrame(int slot, int w, int h) = 0;
+  // 串行化 cudart 写入与 D3D 采样；两者只包住 GPU copy/render，不包推理。
+  virtual void lockGpuCopy() {}
+  virtual void unlockGpuCopy() {}
+  // 仅表示跨 API 同步/query 已不可信；普通“输出纹理被 Flutter 占满”不算 fatal。
+  virtual bool gpuFatal() const { return false; }
+};

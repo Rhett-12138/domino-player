@@ -1,0 +1,12 @@
+NVIDIA CUDA Runtime (cudart64_12.dll)
+=====================================
+
+Domino Player optionally redistributes the NVIDIA CUDA Runtime library to support
+zero-copy D3D11 output for TensorRT. The library is not required when the
+TensorRT path is unavailable; playback falls back to CPU/SR paths.
+
+Source package: nvidia-cuda-runtime-cu12 12.9.79 (Windows x64 wheel)
+License: NVIDIA CUDA Toolkit End User License Agreement (EULA)
+https://docs.nvidia.com/cuda/eula/index.html
+
+The CUDA Runtime is loaded dynamically by src/trt/gpu_interop.cpp.

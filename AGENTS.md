@@ -101,6 +101,7 @@ flutter run -d windows             # 开发运行（热重载）
 - **SR 基准**：`domino_sr_bench`（不加入 ctest）测直接推理、Player 端到端和 Fast/Balanced/FullSource 离线编码；改动 SR/呈现后重跑，数据写入 `docs/plan-sr-playback-2026-10.md` / `plan-sr-worker-2026-10.md` / `plan-offline-sr-quality-2026-10.md`。
 - **离线 SR 流水线必须走 finishSr**：`needSR` 时 SR 推理和后处理各有一个 worker，所有出口（正常 EOF、取消、writeError）都必须 `finishSr(...)` 后 **分别 join infer/post 两个线程**；推理/后处理队列都会额外占用 SR 输出缓冲，4K FullSource 需实机确认峰值内存。NCNN 快路径可用 `DOMINO_NO_VULKAN_FASTPATH=1` 关闭。
 - **TensorRT-RTX 是可选后端**：便携包在 `libs/tensorrt-rtx/`（git 忽略），不要求 CUDA Toolkit；`DOMINO_NO_TRT=1` 强制 NCNN。标准/HQ 模型用 `assets/models/sr/onnx/`，动画与 2x/3x 仍走 NCNN。engine 缓存在 `%APPDATA%/DominoPlayer/trt-rtx`，首次构建约 12–20s；初始化失败回退 NCNN，推理失败仍回退源帧并判任务失败。此代码含 Windows `nvcuda.dll`，只应在 Windows 可选构建中启用。
+- **零拷贝输出是 IFrameOutput 的显式例外**：`IGpuFrameSink` 只传不透明 D3D11 纹理指针，D3D11 头/库不得进入 `domino_core`；TensorRT 输出经 cudart 写入 2 个 slot × 3 张 R16 纹理。输入纹理必须 `D3D11_RESOURCE_MISC_SHARED`；cudart copy 与 D3D 采样必须由 `lockGpuCopy` 串行化；D3D 纹理注册必须按 slot 固定缓存，不能每帧 unregister/register，也不能无界增长。缺 `cudart64_12.dll` 时静默回退 CPU（4K 约 23.6 FPS），排查用 `DOMINO_CUDART_PATH` / `DOMINO_TRT_PROFILE`；详见 `docs/plan-zero-copy-2026-10.md`。
 - **续编分段不能乱删**：续编取消/失败时保留 `task.mp4.resume`，下次启动先合并再继续；替换主文件必须先备份、失败回滚，禁止静默忽略 `remove/rename` 错误。
   - `.resume.merging` = 合并中的续编段；`.resume.cont` = 续编段标记（主文件丢失时禁止当首段提升）；`.bak` = 主文件替换备份，启动时先恢复。
   - 合并幂等按“分段**末**帧是否已被主文件覆盖”判断；不要用首帧（检查点可能落后约 1s，首帧早于主文件末尾是合法重叠）。

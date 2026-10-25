@@ -8,7 +8,7 @@
 
 // D3D11/HLSL 美颜帧输出（Windows 前端专用）。
 // 通过 DXGI shared handle 交给 Flutter GPU surface；初始化失败时调用方回退 CPU。
-class GpuFrameOutput : public IFrameOutput {
+class GpuFrameOutput : public IFrameOutput, public IGpuFrameSink {
 public:
   GpuFrameOutput();
   ~GpuFrameOutput() override;
@@ -18,6 +18,13 @@ public:
   void presentFrame(const uint8_t* rgb, int w, int h) override;
   void beginPresent() override {}
   void endPresent() override {}
+
+  bool acquireGpuSrFrame(int w, int h, int& slot, void* textures[3]) override;
+  void releaseGpuSrFrame(int slot) override;
+  bool presentGpuSrFrame(int slot, int w, int h) override;
+  void lockGpuCopy() override;
+  void unlockGpuCopy() override;
+  bool gpuFatal() const override;
 
   void setBeautyParams(const EngineBeautyParams& bp);
   bool hasNewFrame() const;

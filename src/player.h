@@ -80,8 +80,16 @@ public:
   void setVolume(double v) { volume_.store(v); }
 
   // ---- 美颜/滤镜（引擎状态，帧输出在上屏前应用） ----
-  void setBeauty(float smooth, float white) { bp_.smooth = smooth; bp_.white = white; }
-  void setFilter(int idx, float amt) { bp_.filterIdx = idx; bp_.filterAmt = amt; }
+  void setBeauty(float smooth, float white) {
+    bp_.smooth = smooth;
+    bp_.white = white;
+    updateBeautyActive();
+  }
+  void setFilter(int idx, float amt) {
+    bp_.filterIdx = idx;
+    bp_.filterAmt = amt;
+    updateBeautyActive();
+  }
   const EngineBeautyParams& beauty() const { return bp_; }
 
   // ---- 每帧推进（主循环调用） ----
@@ -126,6 +134,7 @@ private:
   struct VideoFrame {
     std::vector<uint8_t> rgb;
     int w = 0, h = 0;
+    int gpuSlot = -1;   // >=0: TensorRT 已写入 IGpuFrameSink 的 R16 平面纹理
     double pts = 0;
   };
 
@@ -136,6 +145,12 @@ private:
   void startVideo();
   void stopVideo();
   void clearVideoQueue();
+  void dropPendingFrame();
+  void releaseGpuFrame(VideoFrame& f);
+  void updateBeautyActive() {
+    beautyActive_.store(bp_.smooth > 0.001f || bp_.white > 0.001f ||
+                        (bp_.filterIdx != 0 && bp_.filterAmt > 0.001f));
+  }
   void seekInternal(double t);
   void ensureSR();
   void maybeAutoDegrade(double now);
@@ -144,6 +159,7 @@ private:
   double nowWall() const { return std::chrono::duration<double>(std::chrono::steady_clock::now() - tStart_).count(); }
 
   IFrameOutput& out_;        // 视频输出（Flutter 像素纹理）
+  IGpuFrameSink* gpuSink_ = nullptr;   // out_ 可选实现的零拷贝输出
   Config cfg_;
   MediaStream vid_, aud_;
   SR sr_;
@@ -166,11 +182,13 @@ private:
   std::atomic<int> inW_{ 0 };    // 手动 SR 输入宽（--in）
   std::atomic<bool> srInited_{ false };
   std::atomic<bool> srFailed_{ false };
+  std::atomic<bool> gpuSrDisabled_{ false };   // cudart/D3D 互操作失败后本会话回退 CPU
   double fpsLowSince_ = 0;
   double autoCooldownUntil_ = 0;
   double lastAutoCheck_ = 0;
 
   int srOutW_ = 0, srOutH_ = 0;
+  int gpuSlotW_ = 0, gpuSlotH_ = 0;   // GpuFrameOutput 当前纹理池尺寸
   double fpsDisplay_ = 0;
   long long frameIdx_ = 0;
   bool drewVideo_ = false;
@@ -231,4 +249,5 @@ private:
 
   // 美颜/滤镜
   EngineBeautyParams bp_;
+  std::atomic<bool> beautyActive_{ false };   // worker 只读，避免与 UI 的 bp_ 写入竞争
 };

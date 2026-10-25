@@ -82,6 +82,13 @@ Fast 由固定编码/初始化开销主导，TensorRT 没有优势；Balanced/Fu
 - 分发包增加约 220MB；需接受 NVIDIA TensorRT-RTX 许可并附 notices。
 - 画质仍需真人脸部/发丝/文字/夜景 A/B；FP16 与 NCNN 输出已做基础目视检查。
 
+## 4K 零拷贝更新（2026-10）
+
+- TensorRT FP16 NCHW 输出现在可通过 CUDA Runtime → D3D11 R16 纹理直写，去掉 D2H、CPU FP16→RGB 和整帧 RGBA 上传；详见 `docs/plan-zero-copy-2026-10.md`。
+- App 4K：**约 23.6 → 30.0 FPS**；处理时间约 **40.5 → 32.5 ms**（infer 31–33ms + cudart copy ~0.5ms）。
+- 4K 30 FPS 已达成；剩余瓶颈是 TensorRT 推理（约 27ms）+ 输入准备（约 4ms）。
+- cudart 缺失、D3D 互操作失败或开启美颜/滤镜时自动回退原 CPU 输出路径。
+
 ## 下一步
 
 1. 补 4K FullSource、竖屏、超宽、seek/暂停/自动降档的回归。

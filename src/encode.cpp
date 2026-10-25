@@ -414,6 +414,7 @@ bool encodeOffline(const char* srcPath, const char* outPath, int targetW, const 
       }
     }
 
+    if (!fallback) yuvSws = swsOut.p;
     int sl[1] = { sw * 3 };
     if (opts.preview) {
       if (sw != outW || sh != outH) {
