@@ -89,12 +89,12 @@
 
 ## 下载（Windows 预编译包）
 
-> 当前公开发布的是 **v0.3.0-beta.1（pre-release）**；V0.3 稳定版仍待混合显卡/干净虚拟机等验证。已发布的 `v0.2.4` 绿色包仍可回退。
+> 当前公开发布的是 **v0.3.0-beta.1（pre-release）**。**V0.3 后续只发绿色 zip**；安装器暂停，不再作为发布形态。
 
 无需自行编译：到 [**Releases**](https://github.com/Rhett-12138/domino-player/releases) 下载。
 
-- **安装包**：`domino-player-v0.3.0-beta.1-win64-setup.exe`。按当前用户安装，不需要管理员权限；安装器会检测 VC++ Runtime。
-- **绿色包**：`domino-player-v0.3.0-beta.1-win64.zip`，解压后双击 `domino_flutter.exe`。
+- **绿色包（推荐）**：`domino-player-v0.3.0-beta.1-win64.zip`，解压后双击 `domino_flutter.exe`。
+- 历史 beta 安装包 `domino-player-v0.3.0-beta.1-win64-setup.exe` 仅保留用于测试；V0.3 稳定版不会再提供安装器。
 
 两者使用同一份运行时和模型，详见包内 `使用说明.txt`。
 
